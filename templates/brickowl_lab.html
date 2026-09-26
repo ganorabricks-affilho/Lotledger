@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}BrickOwl lab · Lotledger{% endblock %}
+{% block content %}
+<p class="eyebrow">Temporary API playground</p>
+<h1>BrickOwl orders</h1>
+<p class="lede">Paste your key, then try order list / view / items the same way BrickOwl’s docs describe. Responses show here as JSON. The key stays in this browser session only.</p>
+
+<section class="panel">
+  <h2>API key</h2>
+  {% if has_key %}
+  <p class="lede">Key saved for this session{{ ' (' ~ key_hint ~ ')' if key_hint else '' }}. Docs: <a href="https://www.brickowl.com/api_docs" target="_blank" rel="noreferrer">brickowl.com/api_docs</a></p>
+  <form method="post">
+    <input type="hidden" name="action" value="clear">
+    <button class="danger" type="submit">Forget key</button>
+  </form>
+  {% else %}
+  <form class="form" method="post">
+    <label>BrickOwl API key
+      <input name="key" type="password" autocomplete="off" required placeholder="Paste key">
+    </label>
+    <button type="submit">Save key in this session</button>
+  </form>
+  {% endif %}
+</section>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>order/list</code></header>
+  <p class="lede">Store orders (default) or orders you placed. Optional filters match the docs.</p>
+  <div class="row">
+    <label>list_type
+      <select data-param="list_type">
+        <option value="store">store</option>
+        <option value="customer">customer</option>
+      </select>
+    </label>
+    <label>limit
+      <input data-param="limit" value="20" placeholder="default 500">
+    </label>
+  </div>
+  <div class="row">
+    <label>status (numeric id)
+      <input data-param="status" placeholder="e.g. 2 Payment Received">
+    </label>
+    <label>offset
+      <input data-param="offset" placeholder="0">
+    </label>
+  </div>
+  <div class="row">
+    <label>order_time (unix)
+      <input data-param="order_time" placeholder="optional">
+    </label>
+    <label>sort_by
+      <select data-param="sort_by">
+        <option value="">created (default)</option>
+        <option value="updated">updated</option>
+      </select>
+    </label>
+  </div>
+  <button type="button" data-run="order/list">Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>order/view</code></header>
+  <p class="lede">Full order details. Use an <code>order_id</code> from the list response.</p>
+  <label>order_id
+    <input data-param="order_id" required placeholder="e.g. 3568641">
+  </label>
+  <button type="button" data-run="order/view">Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>order/items</code></header>
+  <p class="lede">Line items for one order.</p>
+  <label>order_id
+    <input data-param="order_id" required placeholder="e.g. 3568641">
+  </label>
+  <button type="button" data-run="order/items">Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>order/tax_schemes</code></header>
+  <p class="lede">Optional extra: tax schemes that can be applied to orders.</p>
+  <button type="button" data-run="order/tax_schemes">Try it</button>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Response</h2>
+    <span id="response-meta">Nothing run yet</span>
+  </div>
+  <pre class="json-out" id="response-body">{}</pre>
+</section>
+
+<script>
+  async function run(path, section) {
+    const params = {};
+    section.querySelectorAll("[data-param]").forEach((input) => {
+      params[input.getAttribute("data-param")] = input.value;
+    });
+    const meta = document.getElementById("response-meta");
+    const body = document.getElementById("response-body");
+    meta.textContent = "Calling " + path + "…";
+    body.textContent = "";
+    const res = await fetch({{ url_for('brickowl_try')|tojson }}, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, params })
+    });
+    const data = await res.json();
+    if (data.error) {
+      meta.textContent = "Error";
+      body.textContent = data.error;
+      return;
+    }
+    meta.textContent = data.status + " · " + data.url;
+    body.textContent = data.pretty;
+  }
+  document.querySelectorAll("[data-run]").forEach((button) => {
+    button.addEventListener("click", () => {
+      run(button.getAttribute("data-run"), button.closest(".op"));
+    });
+  });
+</script>
+{% endblock %}

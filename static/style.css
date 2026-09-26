@@ -144,6 +144,83 @@ input, select, textarea {
 .lot-list span { display: block; color: var(--muted); font-size: 0.9rem; }
 .split { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
 .crumb { margin-bottom: 8px; }
+.op {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 18px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+.op header {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.op header code { font-size: 1rem; }
+.method {
+  background: #1f6b45;
+  color: white;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.json-out {
+  margin: 0;
+  max-height: 480px;
+  overflow: auto;
+  background: #1c1914;
+  color: #f4efe6;
+  padding: 16px;
+  border-radius: 12px;
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: block;
+}
+.ids { font-size: 0.85rem; color: var(--muted); }
+.ids summary { cursor: pointer; list-style: none; letter-spacing: 0.12em; }
+.ids summary::-webkit-details-marker { display: none; }
+.ids p { margin: 6px 0 0; }
+tfoot td { font-weight: 700; border-top: 2px solid var(--ink); }
+.import-status {
+  margin: 12px 0 0;
+  color: var(--brick-dark);
+  font-size: 0.95rem;
+}
+.import-status::before {
+  content: "";
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-right: 8px;
+  border: 2px solid var(--line);
+  border-top-color: var(--brick);
+  border-radius: 50%;
+  vertical-align: -0.1em;
+  animation: spin 0.8s linear infinite;
+}
+body.is-busy,
+body.is-busy * {
+  cursor: wait !important;
+}
+button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 @media (max-width: 800px) {
   .hero, .grid-2, .stats, .stats.compact, .row, .split { grid-template-columns: 1fr; display: grid; }
 }

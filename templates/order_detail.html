@@ -5,78 +5,111 @@
 <div class="split">
   <div>
     <h1>{{ order.platform }} #{{ order.order_number }}</h1>
-    <p class="lede">{{ order.sold_on }}{% if order.sold_at %} · {{ order.sold_at }}{% endif %} · {{ order.line_count }} lots · {{ order.part_count }} parts</p>
+    <p class="lede">{{ order.sold_on }}{% if order.status %} · {{ order.status }}{% endif %}{% if order.payment_method %} · {{ order.payment_method }}{% endif %} · {{ order.display_qty }} quantity · {{ order.display_lots }} lots</p>
   </div>
-  <form method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete this order and its line items?')">
+  <form method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete order {{ order.order_number }} and its line items? You can reimport it later.')">
     <button class="danger" type="submit">Delete order</button>
   </form>
 </div>
 
-<div class="stats compact">
+<div class="stats">
   <article>
-    <span>Items</span>
+    <span>Order total</span>
     <strong>{{ money(order.items_cents) }}</strong>
-    <em>sum of the rows in this order</em>
+    <em>from BrickOwl (includes extras)</em>
   </article>
   <article>
-    <span>Shipping + other</span>
-    <strong>{{ money(order.shipping_cents + order.other_costs_cents) }}</strong>
-    <em>{{ money(order.shipping_cents) }} ship · {{ money(order.other_costs_cents) }} other</em>
+    <span>Item costs</span>
+    <strong>{{ money3(order.lines_cents) }}</strong>
+    <em>sum of row prices × qty</em>
   </article>
+  <article>
+    <span>Shipping</span>
+    <strong>{{ money(order.shipping_cents) }}</strong>
+    <em>added manually</em>
+  </article>
+  {% if order.is_paypal %}
+  <article class="down">
+    <span>PayPal fee</span>
+    <strong>−{{ money(order.payment_fee_cents) }}</strong>
+    <em>(order total × 3.49%) + $0.49</em>
+  </article>
+  {% endif %}
   <article class="{{ 'up' if order.net_cents >= 0 else 'down' }}">
-    <span>Order net</span>
+    <span>Net for now</span>
     <strong>{{ money(order.net_cents) }}</strong>
-    <em>items − shipping − other costs</em>
+    <em>order total − shipping{% if order.is_paypal %} − PayPal fee{% endif %}</em>
   </article>
 </div>
 
 <section class="panel">
-  <h2>Order header costs</h2>
-  <p class="lede">Not in the CSV. Add shipping and other costs here for now.</p>
+  <h2>Shipping</h2>
   <form class="form" method="post" action="{{ url_for('order_costs', order_id=order.id) }}">
-    <div class="row">
-      <label>Shipping
-        <input name="shipping" inputmode="decimal" value="{{ money_input(order.shipping_cents) }}">
-      </label>
-      <label>Other costs
-        <input name="other_costs" inputmode="decimal" value="{{ money_input(order.other_costs_cents) }}">
-      </label>
-    </div>
-    <button type="submit">Save costs</button>
+    <label>Shipping
+      <input name="shipping" inputmode="decimal" value="{{ money_input(order.shipping_cents) }}">
+    </label>
+    <input type="hidden" name="other_costs" value="{{ money_input(order.other_costs_cents) }}">
+    <button type="submit">Save shipping</button>
   </form>
 </section>
 
 <section class="panel">
   <div class="panel-head">
-    <h2>Line items</h2>
-    <span>These rows are what you’ll match to purchased lots next</span>
+    <h2>Order items</h2>
+    <span>Item costs {{ money3(order.lines_cents) }} · will not match order total</span>
   </div>
   <div class="table-scroll">
     <table>
       <thead>
         <tr>
-          <th>Item</th>
+          <th></th>
+          <th>Name</th>
           <th>Type</th>
           <th>Color</th>
-          <th>Qty</th>
-          <th>Price</th>
-          <th>Total</th>
           <th>Condition</th>
+          <th>Qty</th>
+          <th>Cost</th>
+          <th>Line total</th>
+          <th>Personal note</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
         {% for line in order.lines %}
         <tr>
-          <td>{{ line.item_id }}<small>{{ line.item_name }}</small></td>
-          <td>{{ line.item_type }}</td>
-          <td>{{ line.color_name or line.color_id or '—' }}</td>
+          <td>
+            {% if line.image_url %}
+            <img class="thumb" src="{{ line.image_url }}" alt="">
+            {% else %}
+            —
+            {% endif %}
+          </td>
+          <td>{{ line.item_name or '—' }}</td>
+          <td>{{ line.item_type or '—' }}</td>
+          <td>{{ line.color_name or '—' }}</td>
+          <td>{{ line.condition or '—' }}</td>
           <td>{{ line.qty }}</td>
-          <td>{{ money(line.price_cents) }}</td>
-          <td>{{ money(line.qty * line.price_cents) }}</td>
-          <td>{{ line.condition }}</td>
+          <td>{{ money3(line.price_cents) }}</td>
+          <td>{{ money3(line.qty * line.price_cents) }}</td>
+          <td>{{ line.personal_note or '—' }}</td>
+          <td>
+            <details class="ids">
+              <summary>⋯</summary>
+              <p>BOID {{ line.boid or '—' }}</p>
+              <p>Lot ID {{ line.owl_lot_id or '—' }}</p>
+              <p>BL lot ID {{ line.bl_lot_id or '—' }}</p>
+            </details>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="7">Item costs</td>
+          <td>{{ money3(order.lines_cents) }}</td>
+          <td colspan="2"></td>
+        </tr>
+      </tfoot>
     </table>
   </div>
 </section>

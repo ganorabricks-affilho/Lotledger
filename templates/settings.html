@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Settings · Lotledger{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="lede">Keys stay on this machine in the local SQLite database. They are not committed to git.</p>
+
+<section class="panel form" style="max-width: 560px;">
+  <h2>BrickOwl API</h2>
+  <p class="lede">Used to import store orders. Create a key in your BrickOwl account, then paste it here.</p>
+  {% if has_brickowl_key %}
+  <p>A key is saved{{ ' (' ~ key_hint ~ ')' if key_hint else '' }}.</p>
+  {% endif %}
+  <form method="post">
+    <label>API key
+      <input name="brickowl_api_key" type="password" autocomplete="off" placeholder="Paste a new key to replace">
+    </label>
+    <div class="hero-actions">
+      <button type="submit">Save key</button>
+    </div>
+  </form>
+  {% if has_brickowl_key %}
+  <form method="post" style="margin-top: 12px;">
+    <input type="hidden" name="action" value="clear_brickowl">
+    <button class="danger" type="submit">Remove key</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

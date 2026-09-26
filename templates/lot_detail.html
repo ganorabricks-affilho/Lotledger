@@ -113,7 +113,7 @@
         <td>{{ line.platform }} #{{ line.order_number }}</td>
         <td>{{ line.item_id }}<small>{{ line.item_name }}</small></td>
         <td>{{ line.qty }}</td>
-        <td>{{ money(line.qty * line.price_cents) }}</td>
+        <td>{{ money3(line.qty * line.price_cents) }}</td>
       </tr>
       {% endfor %}
     </tbody>

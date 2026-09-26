@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS orders (
     currency TEXT NOT NULL DEFAULT 'USD',
     shipping_cents INTEGER NOT NULL DEFAULT 0,
     other_costs_cents INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '',
+    payment_method TEXT NOT NULL DEFAULT '',
+    header_lots INTEGER NOT NULL DEFAULT 0,
+    header_qty INTEGER NOT NULL DEFAULT 0,
+    header_total_cents INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(platform_key, order_number)
 );
@@ -79,6 +84,11 @@ CREATE TABLE IF NOT EXISTS order_lines (
     qty INTEGER NOT NULL,
     condition TEXT NOT NULL DEFAULT '',
     price_cents INTEGER NOT NULL DEFAULT 0,
+    image_url TEXT NOT NULL DEFAULT '',
+    boid TEXT NOT NULL DEFAULT '',
+    owl_lot_id TEXT NOT NULL DEFAULT '',
+    bl_lot_id TEXT NOT NULL DEFAULT '',
+    personal_note TEXT NOT NULL DEFAULT '',
     lot_id INTEGER,
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
     FOREIGN KEY (lot_id) REFERENCES lots(id) ON DELETE SET NULL
@@ -86,6 +96,11 @@ CREATE TABLE IF NOT EXISTS order_lines (
 
 CREATE INDEX IF NOT EXISTS idx_order_lines_order_id ON order_lines(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_lines_lot_id ON order_lines(lot_id);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -109,6 +124,29 @@ def init_db() -> None:
             conn.execute("ALTER TABLE lots ADD COLUMN details_filename TEXT NOT NULL DEFAULT ''")
         if "details_imported_at" not in cols:
             conn.execute("ALTER TABLE lots ADD COLUMN details_imported_at TEXT")
+        order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)")}
+        for name, ddl in (
+            ("status", "TEXT NOT NULL DEFAULT ''"),
+            ("payment_method", "TEXT NOT NULL DEFAULT ''"),
+            ("header_lots", "INTEGER NOT NULL DEFAULT 0"),
+            ("header_qty", "INTEGER NOT NULL DEFAULT 0"),
+            ("header_total_cents", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in order_cols:
+                conn.execute(f"ALTER TABLE orders ADD COLUMN {name} {ddl}")
+        line_cols = {row[1] for row in conn.execute("PRAGMA table_info(order_lines)")}
+        for name in ("image_url", "boid", "owl_lot_id", "bl_lot_id", "personal_note"):
+            if name not in line_cols:
+                conn.execute(f"ALTER TABLE order_lines ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        scale = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", ("order_line_price_scale",)
+        ).fetchone()
+        if not scale or scale["value"] != "milli":
+            conn.execute("UPDATE order_lines SET price_cents = price_cents * 10")
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("order_line_price_scale", "milli"),
+            )
 
 
 def parse_money(value: str) -> int:
@@ -124,11 +162,40 @@ def money(cents: int) -> str:
     return f"{sign}${cents // 100:,}.{cents % 100:02d}"
 
 
+def money3(millis: int) -> str:
+    sign = "-" if millis < 0 else ""
+    millis = abs(millis or 0)
+    return f"{sign}${millis // 1000:,}.{millis % 1000:03d}"
+
+
 def money_input(cents: int) -> str:
     cents = cents or 0
     sign = "-" if cents < 0 else ""
     cents = abs(cents)
     return f"{sign}{cents // 100}.{cents % 100:02d}"
+
+
+def get_setting(key: str) -> str:
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else ""
+
+
+def set_setting(key: str, value: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+
+def existing_order_numbers(platform_key: str):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT order_number FROM orders WHERE platform_key = ?",
+            (platform_key,),
+        ).fetchall()
+    return {row["order_number"] for row in rows}
 
 
 def list_lots():
@@ -297,8 +364,9 @@ def import_orders(parsed_orders: list) -> dict:
             cur = conn.execute(
                 """
                 INSERT INTO orders (
-                    sold_on, sold_at, platform_key, platform, order_number, currency
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    sold_on, sold_at, platform_key, platform, order_number, currency,
+                    status, payment_method, header_lots, header_qty, header_total_cents
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order["sold_on"],
@@ -306,7 +374,12 @@ def import_orders(parsed_orders: list) -> dict:
                     order["platform_key"],
                     order["platform"],
                     order["order_number"],
-                    order["currency"],
+                    order.get("currency") or "USD",
+                    order.get("status") or "",
+                    order.get("payment_method") or "",
+                    order.get("header_lots") or 0,
+                    order.get("header_qty") or 0,
+                    order.get("header_total_cents") or 0,
                 ),
             )
             order_id = cur.lastrowid
@@ -314,24 +387,30 @@ def import_orders(parsed_orders: list) -> dict:
                 """
                 INSERT INTO order_lines (
                     order_id, item_id, item_name, item_type, category_id, category_name,
-                    color_id, color_name, qty, condition, price_cents
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    color_id, color_name, qty, condition, price_cents,
+                    image_url, boid, owl_lot_id, bl_lot_id, personal_note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         order_id,
-                        line["item_id"],
-                        line["item_name"],
-                        line["item_type"],
-                        line["category_id"],
-                        line["category_name"],
-                        line["color_id"],
-                        line["color_name"],
-                        line["qty"],
-                        line["condition"],
-                        line["price_cents"],
+                        line.get("item_id") or "",
+                        line.get("item_name") or "",
+                        line.get("item_type") or "",
+                        line.get("category_id") or "",
+                        line.get("category_name") or "",
+                        line.get("color_id") or "",
+                        line.get("color_name") or "",
+                        line.get("qty") or 0,
+                        line.get("condition") or "",
+                        line.get("price_cents") or 0,
+                        line.get("image_url") or "",
+                        line.get("boid") or "",
+                        line.get("owl_lot_id") or "",
+                        line.get("bl_lot_id") or "",
+                        line.get("personal_note") or "",
                     )
-                    for line in order["lines"]
+                    for line in order.get("lines") or []
                 ],
             )
             existing.add(key)
@@ -346,7 +425,7 @@ def list_orders():
             orders.*,
             COUNT(order_lines.id) AS line_count,
             COALESCE(SUM(order_lines.qty), 0) AS part_count,
-            COALESCE(SUM(order_lines.qty * order_lines.price_cents), 0) AS items_cents
+            COALESCE(SUM(order_lines.qty * order_lines.price_cents), 0) AS lines_cents
         FROM orders
         LEFT JOIN order_lines ON order_lines.order_id = orders.id
         GROUP BY orders.id
@@ -378,7 +457,7 @@ def get_order(order_id: int):
             **dict(row),
             "line_count": len(lines),
             "part_count": sum(line["qty"] for line in lines),
-            "items_cents": sum(line["qty"] * line["price_cents"] for line in lines),
+            "lines_cents": sum(line["qty"] * line["price_cents"] for line in lines),
         }
     )
     order["lines"] = lines
@@ -439,10 +518,21 @@ def summary():
 
 def _enrich_order(row) -> dict:
     order = dict(row)
-    items = order.get("items_cents") or 0
+    header_total = order.get("header_total_cents") or 0
+    lines_cents = order.get("lines_cents") or 0
+    items = header_total or lines_cents
     shipping = order.get("shipping_cents") or 0
     other = order.get("other_costs_cents") or 0
-    order["net_cents"] = items - shipping - other
+    payment = (order.get("payment_method") or "").strip().lower()
+    fee_cents = 0
+    if "paypal" in payment:
+        fee_cents = int(round(items * 0.0349)) + 49
+    order["items_cents"] = items
+    order["display_lots"] = order.get("header_lots") or order.get("line_count") or 0
+    order["display_qty"] = order.get("header_qty") or order.get("part_count") or 0
+    order["payment_fee_cents"] = fee_cents
+    order["is_paypal"] = fee_cents > 0 or "paypal" in payment
+    order["net_cents"] = items - shipping - other - fee_cents
     return order
 
 
