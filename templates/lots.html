@@ -7,41 +7,7 @@
 <section class="grid-2">
   <form class="panel form" method="post">
     <h2>New lot</h2>
-    <label>Name
-      <input name="title" required placeholder="e.g. eBay mixed bulk 4.2kg">
-    </label>
-    <div class="row">
-      <label>Purchased on
-        <input type="date" name="purchased_on" required>
-      </label>
-      <label>Source
-        <select name="source">
-          {% for source in sources %}
-          <option>{{ source }}</option>
-          {% endfor %}
-        </select>
-      </label>
-    </div>
-    <div class="row">
-      <label>Cost
-        <input class="money-part" name="cost" inputmode="decimal" placeholder="120.00" required>
-      </label>
-      <label>Shipping
-        <input class="money-part" name="shipping" inputmode="decimal" placeholder="15.00">
-      </label>
-    </div>
-    <div class="row">
-      <label>Tax
-        <input class="money-part" name="tax" inputmode="decimal" placeholder="8.40">
-      </label>
-      <label>Handling
-        <input class="money-part" name="handling" inputmode="decimal" placeholder="3.00">
-      </label>
-    </div>
-    <p class="total-line">Total to recover <strong id="lot-total">$0.00</strong></p>
-    <label>Notes
-      <textarea name="notes" rows="3" placeholder="Seller, weight, what you expected to find"></textarea>
-    </label>
+    {% include "_lot_fields.html" %}
     <button type="submit">Save lot</button>
   </form>
 
@@ -53,7 +19,7 @@
       <li>
         <a href="{{ url_for('lot_detail', lot_id=lot.id) }}">
           <strong>{{ lot.title }}</strong>
-          <span>{{ lot.purchased_on }} · {{ lot.source }} · {{ lot.status }} · total {{ money(lot.invested_cents) }}{% if lot.has_details %} · {{ lot.listed_qty }} pcs listed{% endif %}</span>
+          <span>#{{ lot.id }} · {{ lot.purchased_on }} · {{ lot.source }} · {{ lot.status }} · total {{ money(lot.invested_cents) }}{% if lot.has_details %} · {{ lot.listed_qty }} parts listed{% endif %}</span>
         </a>
       </li>
       {% endfor %}
@@ -63,26 +29,4 @@
     {% endif %}
   </div>
 </section>
-<script>
-  function parseMoney(value) {
-    const raw = (value || "").replace(/[$,]/g, "").trim();
-    if (!raw) return 0;
-    return Math.round(parseFloat(raw) * 100);
-  }
-  function formatMoney(cents) {
-    const sign = cents < 0 ? "-" : "";
-    cents = Math.abs(cents);
-    return sign + "$" + Math.floor(cents / 100) + "." + String(cents % 100).padStart(2, "0");
-  }
-  function updateLotTotal() {
-    const parts = document.querySelectorAll(".money-part");
-    let total = 0;
-    parts.forEach((input) => { total += parseMoney(input.value); });
-    document.getElementById("lot-total").textContent = formatMoney(total);
-  }
-  document.querySelectorAll(".money-part").forEach((input) => {
-    input.addEventListener("input", updateLotTotal);
-  });
-  updateLotTotal();
-</script>
 {% endblock %}

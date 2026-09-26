@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ lot.title }} · Lotledger{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('lot_detail', lot_id=lot.id) }}">{{ lot.title }}</a> / edit</p>
+<h1>Edit lot</h1>
+<p class="lede">Fix title, source, dates, or the purchase total. Listing XML stays as-is unless you replace it on the lot page.</p>
+<form class="panel form" method="post" style="max-width: 560px;">
+  {% include "_lot_fields.html" %}
+  <div class="hero-actions">
+    <button type="submit">Save changes</button>
+    <a class="btn ghost" href="{{ url_for('lot_detail', lot_id=lot.id) }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

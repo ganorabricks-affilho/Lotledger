@@ -5,11 +5,14 @@
 <div class="split">
   <div>
     <h1>{{ lot.title }}</h1>
-    <p class="lede">{{ lot.source }} · bought {{ lot.purchased_on }} · {{ lot.status }}</p>
+    <p class="lede">Lot #{{ lot.id }} · {{ lot.source }} · bought {{ lot.purchased_on }} · {{ lot.status }}</p>
   </div>
-  <form method="post" action="{{ url_for('lot_delete', lot_id=lot.id) }}" onsubmit="return confirm('Delete this lot? Sales stay, unmatched.')">
-    <button class="danger" type="submit">Delete lot</button>
-  </form>
+  <div class="hero-actions">
+    <a class="btn ghost" href="{{ url_for('lot_edit', lot_id=lot.id) }}">Edit lot</a>
+    <form method="post" action="{{ url_for('lot_delete', lot_id=lot.id) }}" onsubmit="return confirm('Delete this lot? Sales stay, unmatched.')">
+      <button class="danger" type="submit">Delete lot</button>
+    </form>
+  </div>
 </div>
 
 {% if not lot.has_details %}
@@ -42,7 +45,7 @@
   <div class="panel-head">
     <h2>Listing details</h2>
     {% if lot.has_details %}
-    <span>{{ lot.detail_count }} lines · {{ lot.listed_qty }} pcs · listed {{ money(lot.listed_value_cents) }}</span>
+    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} parts · listed {{ money(lot.listed_value_cents) }}</span>
     {% endif %}
   </div>
   <form class="form" method="post" action="{{ url_for('lot_details', lot_id=lot.id) }}" enctype="multipart/form-data">
@@ -90,43 +93,33 @@
 <section class="panel">
   <div class="panel-head">
     <h2>Matched sales</h2>
-    <a href="{{ url_for('sales') }}">Add sale</a>
+    <a href="{{ url_for('sales') }}">Sales</a>
   </div>
-  {% if lot.sales %}
+  {% if lot.matched_lines %}
   <table>
     <thead>
       <tr>
         <th>Date</th>
-        <th>Platform</th>
         <th>Order</th>
-        <th>Gross</th>
-        <th>Fees</th>
-        <th>Net</th>
-        <th></th>
+        <th>Item</th>
+        <th>Qty</th>
+        <th>Total</th>
       </tr>
     </thead>
     <tbody>
-      {% for sale in lot.sales %}
+      {% for line in lot.matched_lines %}
       <tr>
-        <td>{{ sale.sold_on }}</td>
-        <td>{{ sale.platform }}</td>
-        <td>{{ sale.order_ref }}{% if sale.description %}<small>{{ sale.description }}</small>{% endif %}</td>
-        <td>{{ money(sale.gross_cents) }}</td>
-        <td>{{ money(sale.fees_cents) }}</td>
-        <td>{{ money(sale.gross_cents - sale.fees_cents) }}</td>
-        <td>
-          <form class="inline" method="post" action="{{ url_for('sale_match', sale_id=sale.id) }}">
-            <input type="hidden" name="lot_id" value="">
-            <input type="hidden" name="next" value="{{ url_for('lot_detail', lot_id=lot.id) }}">
-            <button type="submit">Unmatch</button>
-          </form>
-        </td>
+        <td>{{ line.sold_on }}</td>
+        <td>{{ line.platform }} #{{ line.order_number }}</td>
+        <td>{{ line.item_id }}<small>{{ line.item_name }}</small></td>
+        <td>{{ line.qty }}</td>
+        <td>{{ money(line.qty * line.price_cents) }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="empty">No sales matched to this lot yet. Record a sale and pick this lot, or match it from the P&amp;L page.</p>
+  <p class="empty">No sold rows matched to this lot yet. Matching comes after sales are imported.</p>
   {% endif %}
 </section>
 {% endblock %}

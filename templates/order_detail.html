@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Order {{ order.order_number }} · Lotledger{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('sales') }}">Sales</a> / order</p>
+<div class="split">
+  <div>
+    <h1>{{ order.platform }} #{{ order.order_number }}</h1>
+    <p class="lede">{{ order.sold_on }}{% if order.sold_at %} · {{ order.sold_at }}{% endif %} · {{ order.line_count }} lots · {{ order.part_count }} parts</p>
+  </div>
+  <form method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete this order and its line items?')">
+    <button class="danger" type="submit">Delete order</button>
+  </form>
+</div>
+
+<div class="stats compact">
+  <article>
+    <span>Items</span>
+    <strong>{{ money(order.items_cents) }}</strong>
+    <em>sum of the rows in this order</em>
+  </article>
+  <article>
+    <span>Shipping + other</span>
+    <strong>{{ money(order.shipping_cents + order.other_costs_cents) }}</strong>
+    <em>{{ money(order.shipping_cents) }} ship · {{ money(order.other_costs_cents) }} other</em>
+  </article>
+  <article class="{{ 'up' if order.net_cents >= 0 else 'down' }}">
+    <span>Order net</span>
+    <strong>{{ money(order.net_cents) }}</strong>
+    <em>items − shipping − other costs</em>
+  </article>
+</div>
+
+<section class="panel">
+  <h2>Order header costs</h2>
+  <p class="lede">Not in the CSV. Add shipping and other costs here for now.</p>
+  <form class="form" method="post" action="{{ url_for('order_costs', order_id=order.id) }}">
+    <div class="row">
+      <label>Shipping
+        <input name="shipping" inputmode="decimal" value="{{ money_input(order.shipping_cents) }}">
+      </label>
+      <label>Other costs
+        <input name="other_costs" inputmode="decimal" value="{{ money_input(order.other_costs_cents) }}">
+      </label>
+    </div>
+    <button type="submit">Save costs</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Line items</h2>
+    <span>These rows are what you’ll match to purchased lots next</span>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>Type</th>
+          <th>Color</th>
+          <th>Qty</th>
+          <th>Price</th>
+          <th>Total</th>
+          <th>Condition</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in order.lines %}
+        <tr>
+          <td>{{ line.item_id }}<small>{{ line.item_name }}</small></td>
+          <td>{{ line.item_type }}</td>
+          <td>{{ line.color_name or line.color_id or '—' }}</td>
+          <td>{{ line.qty }}</td>
+          <td>{{ money(line.price_cents) }}</td>
+          <td>{{ money(line.qty * line.price_cents) }}</td>
+          <td>{{ line.condition }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

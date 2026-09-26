@@ -5,11 +5,11 @@
   <div>
     <p class="eyebrow">Lot-level profit</p>
     <h1>Are the used lots making money?</h1>
-    <p class="lede">Buy a lot, sell pieces, match each sale back. Unmatched sales stay out of lot P&amp;L until you assign them.</p>
+    <p class="lede">Buy a used lot, import sales CSV, then match sold rows back. Unmatched rows stay out of lot P&amp;L.</p>
   </div>
   <div class="hero-actions">
     <a class="btn" href="{{ url_for('lots') }}">Record a purchased lot</a>
-    <a class="btn ghost" href="{{ url_for('sales') }}">Record a sale</a>
+    <a class="btn ghost" href="{{ url_for('sales') }}">Import sales</a>
   </div>
 </section>
 
@@ -20,19 +20,24 @@
     <em>{{ summary.lot_count }} lot{{ 's' if summary.lot_count != 1 else '' }}{% if summary.pending_count %} · {{ summary.pending_count }} pending details{% endif %}</em>
   </article>
   <article>
-    <span>Matched net sales</span>
-    <strong>{{ money(summary.revenue_cents - summary.fees_cents) }}</strong>
-    <em>{{ money(summary.fees_cents) }} in fees</em>
+    <span>Imported order net</span>
+    <strong>{{ money(summary.order_net_cents) }}</strong>
+    <em>{{ summary.order_count }} order{{ 's' if summary.order_count != 1 else '' }} after ship/other</em>
+  </article>
+  <article>
+    <span>Matched to lots</span>
+    <strong>{{ money(summary.revenue_cents) }}</strong>
+    <em>sold rows assigned to a purchased lot</em>
   </article>
   <article class="{{ 'up' if summary.profit_cents >= 0 else 'down' }}">
     <span>Matched profit</span>
     <strong>{{ money(summary.profit_cents) }}</strong>
-    <em>revenue − fees − lot total</em>
+    <em>matched sales − lot totals</em>
   </article>
   <article>
-    <span>Unmatched sales</span>
+    <span>Unmatched rows</span>
     <strong>{{ money(summary.unmatched_net_cents) }}</strong>
-    <em>{{ summary.unmatched_count }} not applied to a lot</em>
+    <em>{{ summary.unmatched_count }} waiting to match to a lot</em>
   </article>
 </div>
 
@@ -58,7 +63,7 @@
       {% for lot in summary.lots %}
       <tr>
         <td>
-          <a href="{{ url_for('lot_detail', lot_id=lot.id) }}">{{ lot.title }}</a>
+          <a href="{{ url_for('lot_detail', lot_id=lot.id) }}">#{{ lot.id }} {{ lot.title }}</a>
           <small>{{ lot.source }} · {{ lot.status }}</small>
         </td>
         <td>{{ lot.purchased_on }}</td>
@@ -82,42 +87,10 @@
 {% if summary.unmatched %}
 <section class="panel">
   <div class="panel-head">
-    <h2>Unmatched sales</h2>
-    <a href="{{ url_for('sales') }}">All sales</a>
+    <h2>Unmatched sold rows</h2>
+    <a href="{{ url_for('sales') }}">Open sales</a>
   </div>
-  <table>
-    <thead>
-      <tr>
-        <th>Date</th>
-        <th>Platform</th>
-        <th>Sale</th>
-        <th>Net</th>
-        <th>Match to lot</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for sale in summary.unmatched %}
-      <tr>
-        <td>{{ sale.sold_on }}</td>
-        <td>{{ sale.platform }}</td>
-        <td>{{ sale.description or sale.order_ref or 'Sale' }}</td>
-        <td>{{ money(sale.gross_cents - sale.fees_cents) }}</td>
-        <td>
-          <form class="inline" method="post" action="{{ url_for('sale_match', sale_id=sale.id) }}">
-            <input type="hidden" name="next" value="{{ url_for('dashboard') }}">
-            <select name="lot_id" required>
-              <option value="">Choose lot</option>
-              {% for lot in summary.ready_lots %}
-              <option value="{{ lot.id }}">{{ lot.title }}</option>
-              {% endfor %}
-            </select>
-            <button type="submit">Match</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <p class="empty">{{ summary.unmatched_count }} lots still need to be matched to a purchased lot ({{ money(summary.unmatched_net_cents) }}). Matching comes next — say what else you need on the order header and we’ll add it.</p>
 </section>
 {% endif %}
 {% endblock %}
