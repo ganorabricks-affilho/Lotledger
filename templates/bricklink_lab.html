@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}BrickLink lab · Lotledger{% endblock %}
+{% block content %}
+<p class="eyebrow">Temporary API playground</p>
+<h1>BrickLink API</h1>
+<p class="lede">Uses the OAuth credentials from Settings. Try order and inventory endpoints and inspect the JSON fields. Docs: <a href="https://www.bricklink.com/v3/api.page" target="_blank" rel="noreferrer">bricklink.com/v3/api.page</a></p>
+
+<section class="panel">
+  <h2>Credentials</h2>
+  {% if has_creds %}
+  <p class="lede">BrickLink OAuth credentials are loaded from Settings{{ ' (' ~ creds_hint ~ ')' if creds_hint else '' }}.</p>
+  <p class="lede"><a href="{{ url_for('settings') }}">Open Settings</a> to change or remove them. Your public IP must be registered with BrickLink.</p>
+  {% else %}
+  <p class="empty">Add all four BrickLink OAuth values in <a href="{{ url_for('settings') }}">Settings</a> first.</p>
+  {% endif %}
+</section>
+
+<h2>Orders</h2>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>/orders</code></header>
+  <p class="lede">Orders you received (<code>direction=in</code>) or placed. Optional status / filed filters match the docs.</p>
+  <div class="row">
+    <label>direction
+      <select data-param="direction">
+        <option value="in">in (received)</option>
+        <option value="out">out (placed)</option>
+      </select>
+    </label>
+    <label>filed
+      <select data-param="filed">
+        <option value="false">false (default)</option>
+        <option value="true">true</option>
+      </select>
+    </label>
+  </div>
+  <label>status
+    <input data-param="status" placeholder="e.g. pending,completed or -purged">
+  </label>
+  <button type="button" data-run="orders" data-method="GET" {% if not has_creds %}disabled{% endif %}>Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>/orders/{order_id}</code></header>
+  <p class="lede">Full order details (payment, cost, shipping, etc.). Use an <code>order_id</code> from the list response.</p>
+  <label>order_id
+    <input data-param="order_id" required placeholder="e.g. 3986441">
+  </label>
+  <button type="button" data-run="orders/{order_id}" data-method="GET" {% if not has_creds %}disabled{% endif %}>Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>/orders/{order_id}/items</code></header>
+  <p class="lede">Line items in batches. Nested lists are order item batches.</p>
+  <label>order_id
+    <input data-param="order_id" required placeholder="e.g. 3986441">
+  </label>
+  <button type="button" data-run="orders/{order_id}/items" data-method="GET" {% if not has_creds %}disabled{% endif %}>Try it</button>
+</section>
+
+<h2>Inventory</h2>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>/inventories</code></header>
+  <p class="lede">List store inventory lots. Filters match the BrickLink docs.</p>
+  <div class="row">
+    <label>item_type
+      <input data-param="item_type" placeholder="e.g. PART,MINIFIG or -SET">
+    </label>
+    <label>status
+      <input data-param="status" placeholder="Y available · S/B/C stockroom · N · R reserved · -R">
+    </label>
+  </div>
+  <div class="row">
+    <label>category_id
+      <input data-param="category_id" placeholder="optional">
+    </label>
+    <label>color_id
+      <input data-param="color_id" placeholder="optional">
+    </label>
+  </div>
+  <button type="button" data-run="inventories" data-method="GET" {% if not has_creds %}disabled{% endif %}>Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">GET</span> <code>/inventories/{inventory_id}</code></header>
+  <p class="lede">One inventory lot. Use an <code>inventory_id</code> from the list response.</p>
+  <label>inventory_id
+    <input data-param="inventory_id" required placeholder="e.g. 50592684">
+  </label>
+  <button type="button" data-run="inventories/{inventory_id}" data-method="GET" {% if not has_creds %}disabled{% endif %}>Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">POST</span> <code>/inventories</code></header>
+  <p class="lede">Create a lot. Body must include item.no, item.type, color_id, quantity, unit_price, new_or_used.</p>
+  <label>JSON body
+    <textarea data-body rows="12">{
+  "item": { "no": "3001", "type": "PART" },
+  "color_id": 11,
+  "quantity": 1,
+  "unit_price": "0.10",
+  "new_or_used": "U",
+  "description": "",
+  "remarks": "",
+  "bulk": 1,
+  "is_retain": false,
+  "is_stock_room": false
+}</textarea>
+  </label>
+  <button type="button" data-run="inventories" data-method="POST" {% if not has_creds %}disabled{% endif %}>Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">PUT</span> <code>/inventories/{inventory_id}</code></header>
+  <p class="lede">Update a lot. Quantity must be a delta with <code>+</code> or <code>-</code> (e.g. <code>"+1"</code>), not an absolute set.</p>
+  <label>inventory_id
+    <input data-param="inventory_id" required placeholder="e.g. 50592684">
+  </label>
+  <label>JSON body
+    <textarea data-body rows="10">{
+  "quantity": "+1",
+  "unit_price": "0.12",
+  "new_or_used": "U",
+  "description": "",
+  "remarks": "",
+  "bulk": 1,
+  "is_retain": false,
+  "is_stock_room": false
+}</textarea>
+  </label>
+  <button type="button" data-run="inventories/{inventory_id}" data-method="PUT" {% if not has_creds %}disabled{% endif %}>Try it</button>
+</section>
+
+<section class="op">
+  <header><span class="method">DELETE</span> <code>/inventories/{inventory_id}</code></header>
+  <p class="lede">Delete a lot permanently.</p>
+  <label>inventory_id
+    <input data-param="inventory_id" required placeholder="e.g. 50592684">
+  </label>
+  <button type="button" class="danger" data-run="inventories/{inventory_id}" data-method="DELETE" {% if not has_creds %}disabled{% endif %}>Try delete</button>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Response</h2>
+    <span id="response-meta">Nothing run yet</span>
+  </div>
+  <pre class="json-out" id="response-body">{}</pre>
+</section>
+
+<script>
+  async function run(path, method, section) {
+    const params = {};
+    section.querySelectorAll("[data-param]").forEach((input) => {
+      params[input.getAttribute("data-param")] = input.value;
+    });
+    let body = null;
+    const bodyEl = section.querySelector("[data-body]");
+    if (bodyEl && (method === "POST" || method === "PUT")) {
+      try {
+        body = JSON.parse(bodyEl.value);
+      } catch (err) {
+        document.getElementById("response-meta").textContent = "Error";
+        document.getElementById("response-body").textContent = "JSON body is invalid: " + err.message;
+        return;
+      }
+    }
+    const meta = document.getElementById("response-meta");
+    const out = document.getElementById("response-body");
+    meta.textContent = method + " " + path + "…";
+    out.textContent = "";
+    const res = await fetch({{ url_for('bricklink_try')|tojson }}, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, params, method, body })
+    });
+    const data = await res.json();
+    if (data.error) {
+      meta.textContent = "Error";
+      out.textContent = data.error;
+      return;
+    }
+    meta.textContent = (data.method || method) + " " + data.status + " · " + data.url;
+    out.textContent = data.pretty;
+  }
+  document.querySelectorAll("[data-run]").forEach((button) => {
+    button.addEventListener("click", () => {
+      run(
+        button.getAttribute("data-run"),
+        button.getAttribute("data-method") || "GET",
+        button.closest(".op")
+      );
+    });
+  });
+</script>
+{% endblock %}

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS lots (
     notes TEXT NOT NULL DEFAULT '',
     details_filename TEXT NOT NULL DEFAULT '',
     details_imported_at TEXT,
+    details_locked INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -25,13 +26,17 @@ CREATE TABLE IF NOT EXISTS listing_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     lot_id INTEGER NOT NULL,
     item_id TEXT NOT NULL,
+    item_name TEXT NOT NULL DEFAULT '',
     item_type TEXT NOT NULL DEFAULT 'P',
     color TEXT NOT NULL DEFAULT '',
     category TEXT NOT NULL DEFAULT '',
     qty INTEGER NOT NULL,
     price_cents INTEGER NOT NULL DEFAULT 0,
+    sale_rate INTEGER NOT NULL DEFAULT 0,
     condition TEXT NOT NULL DEFAULT 'U',
     remarks TEXT NOT NULL DEFAULT '',
+    bl_lot_id TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (lot_id) REFERENCES lots(id) ON DELETE CASCADE
 );
 
@@ -67,6 +72,8 @@ CREATE TABLE IF NOT EXISTS orders (
     header_lots INTEGER NOT NULL DEFAULT 0,
     header_qty INTEGER NOT NULL DEFAULT 0,
     header_total_cents INTEGER NOT NULL DEFAULT 0,
+    tax_cents INTEGER NOT NULL DEFAULT 0,
+    buyer_shipping_cents INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(platform_key, order_number)
 );
@@ -125,6 +132,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE lots ADD COLUMN details_filename TEXT NOT NULL DEFAULT ''")
         if "details_imported_at" not in cols:
             conn.execute("ALTER TABLE lots ADD COLUMN details_imported_at TEXT")
+        if "details_locked" not in cols:
+            conn.execute("ALTER TABLE lots ADD COLUMN details_locked INTEGER NOT NULL DEFAULT 0")
         order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)")}
         for name, ddl in (
             ("status", "TEXT NOT NULL DEFAULT ''"),
@@ -132,6 +141,8 @@ def init_db() -> None:
             ("header_lots", "INTEGER NOT NULL DEFAULT 0"),
             ("header_qty", "INTEGER NOT NULL DEFAULT 0"),
             ("header_total_cents", "INTEGER NOT NULL DEFAULT 0"),
+            ("tax_cents", "INTEGER NOT NULL DEFAULT 0"),
+            ("buyer_shipping_cents", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in order_cols:
                 conn.execute(f"ALTER TABLE orders ADD COLUMN {name} {ddl}")
@@ -141,6 +152,15 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE order_lines ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
         if "net_gain_cents" not in line_cols:
             conn.execute("ALTER TABLE order_lines ADD COLUMN net_gain_cents INTEGER NOT NULL DEFAULT 0")
+        listing_cols = {row[1] for row in conn.execute("PRAGMA table_info(listing_items)")}
+        for name, ddl in (
+            ("item_name", "TEXT NOT NULL DEFAULT ''"),
+            ("sale_rate", "INTEGER NOT NULL DEFAULT 0"),
+            ("bl_lot_id", "TEXT NOT NULL DEFAULT ''"),
+            ("image_url", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in listing_cols:
+                conn.execute(f"ALTER TABLE listing_items ADD COLUMN {name} {ddl}")
         scale = conn.execute(
             "SELECT value FROM settings WHERE key = ?", ("order_line_price_scale",)
         ).fetchone()
@@ -269,6 +289,7 @@ def get_lot(lot_id: int):
     )
     lot["matched_lines"] = matched
     lot["listed_items"] = items
+    lot["details_locked"] = bool(lot.get("details_locked"))
     return lot
 
 
@@ -321,35 +342,116 @@ def update_lot(lot_id: int, data: dict) -> None:
 def replace_listing(lot_id: int, filename: str, items: list) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM listing_items WHERE lot_id = ?", (lot_id,))
-        conn.executemany(
-            """
-            INSERT INTO listing_items (
-                lot_id, item_id, item_type, color, category, qty, price_cents, condition, remarks
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    lot_id,
-                    item["item_id"],
-                    item["item_type"],
-                    item["color"],
-                    item["category"],
-                    item["qty"],
-                    item["price_cents"],
-                    item["condition"],
-                    item["remarks"],
-                )
-                for item in items
-            ],
+    append_listing(lot_id, filename, items)
+
+
+def set_lot_details_locked(lot_id: int, locked: bool) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE lots SET details_locked = ? WHERE id = ?",
+            (1 if locked else 0, lot_id),
         )
+
+
+def append_listing(lot_id: int, filename: str, items: list) -> dict:
+    """Add listing rows; skip inventory IDs already on this lot. Returns counts."""
+    with get_conn() as conn:
+        existing = {
+            row["bl_lot_id"]
+            for row in conn.execute(
+                "SELECT bl_lot_id FROM listing_items WHERE lot_id = ? AND bl_lot_id != ''",
+                (lot_id,),
+            )
+        }
+        to_add = []
+        skipped = 0
+        for item in items:
+            bl_lot = item.get("bl_lot_id") or ""
+            if bl_lot and bl_lot in existing:
+                skipped += 1
+                continue
+            if bl_lot:
+                existing.add(bl_lot)
+            to_add.append(item)
+        if to_add:
+            conn.executemany(
+                """
+                INSERT INTO listing_items (
+                    lot_id, item_id, item_name, item_type, color, category, qty,
+                    price_cents, sale_rate, condition, remarks, bl_lot_id, image_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        lot_id,
+                        item.get("item_id") or "",
+                        item.get("item_name") or "",
+                        item.get("item_type") or "",
+                        item.get("color") or "",
+                        item.get("category") or "",
+                        item.get("qty") or 0,
+                        item.get("price_cents") or 0,
+                        item.get("sale_rate") or 0,
+                        item.get("condition") or "",
+                        item.get("remarks") or "",
+                        item.get("bl_lot_id") or "",
+                        item.get("image_url") or "",
+                    )
+                    for item in to_add
+                ],
+            )
+        prev = conn.execute(
+            "SELECT details_filename FROM lots WHERE id = ?", (lot_id,)
+        ).fetchone()
+        prev_name = (prev["details_filename"] if prev else "") or ""
+        parts = [p for p in prev_name.split(",") if p.strip()]
+        if filename and filename not in parts:
+            parts.append(filename)
         conn.execute(
             """
             UPDATE lots
             SET details_filename = ?, details_imported_at = datetime('now')
             WHERE id = ?
             """,
-            (filename, lot_id),
+            (",".join(parts), lot_id),
         )
+    return {"added": len(to_add), "skipped": skipped}
+
+
+def clear_listing(lot_id: int) -> int:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM listing_items WHERE lot_id = ?", (lot_id,))
+        conn.execute(
+            """
+            UPDATE lots
+            SET details_filename = '', details_imported_at = NULL
+            WHERE id = ?
+            """,
+            (lot_id,),
+        )
+    return cur.rowcount
+
+
+def delete_listing_item(lot_id: int, item_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM listing_items WHERE id = ? AND lot_id = ?",
+            (item_id, lot_id),
+        )
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS c FROM listing_items WHERE lot_id = ?",
+            (lot_id,),
+        ).fetchone()["c"]
+        if remaining == 0:
+            conn.execute(
+                """
+                UPDATE lots
+                SET details_filename = '', details_imported_at = NULL
+                WHERE id = ?
+                """,
+                (lot_id,),
+            )
+    return cur.rowcount > 0
 
 
 def delete_lot(lot_id: int) -> None:
@@ -380,8 +482,8 @@ def import_orders(parsed_orders: list) -> dict:
                 INSERT INTO orders (
                     sold_on, sold_at, platform_key, platform, order_number, currency,
                     status, payment_method, header_lots, header_qty, header_total_cents,
-                    shipping_cents
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    shipping_cents, tax_cents, buyer_shipping_cents
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order["sold_on"],
@@ -396,6 +498,8 @@ def import_orders(parsed_orders: list) -> dict:
                     order.get("header_qty") or 0,
                     order.get("header_total_cents") or 0,
                     order.get("shipping_cents") or 0,
+                    order.get("tax_cents") or 0,
+                    order.get("buyer_shipping_cents") or 0,
                 ),
             )
             order_id = cur.lastrowid
@@ -578,6 +682,7 @@ def _enrich_order(row) -> dict:
     items = header_total or lines_cents
     shipping = order.get("shipping_cents") or 0
     other = order.get("other_costs_cents") or 0
+    tax = order.get("tax_cents") or 0
     payment = (order.get("payment_method") or "").strip().lower()
     platform_key = (order.get("platform_key") or "").strip().lower()
     fee_cents = 0
@@ -595,7 +700,9 @@ def _enrich_order(row) -> dict:
     brickowl_fee_cents = 0
     bricklink_fee_cents = 0
     if platform_key == "bricklink":
-        bricklink_fee_cents = int(round(items * 0.03))
+        buyer_shipping = order.get("buyer_shipping_cents") or 0
+        item_cost_base = max(0, items - tax - buyer_shipping)
+        bricklink_fee_cents = int(round(item_cost_base * 0.03))
     else:
         item_costs_cents = int(round((lines_cents or 0) / 10))
         brickowl_fee_cents = int(round(item_costs_cents * 0.0265))
@@ -606,13 +713,22 @@ def _enrich_order(row) -> dict:
     order["payment_fee_label"] = fee_label
     order["payment_fee_formula"] = fee_formula
     order["has_payment_fee"] = fee_cents > 0
+    order["tax_cents"] = tax
+    order["has_tax"] = tax > 0
+    order["buyer_shipping_cents"] = order.get("buyer_shipping_cents") or 0
     order["brickfreedom_fee_cents"] = brickfreedom_fee_cents
     order["brickowl_fee_cents"] = brickowl_fee_cents
     order["bricklink_fee_cents"] = bricklink_fee_cents
+    order["bricklink_fee_base_cents"] = (
+        max(0, items - tax - (order.get("buyer_shipping_cents") or 0))
+        if platform_key == "bricklink"
+        else 0
+    )
     order["is_bricklink"] = platform_key == "bricklink"
     order["is_brickowl"] = platform_key != "bricklink"
     order["net_cents"] = (
         items
+        - tax
         - shipping
         - other
         - fee_cents

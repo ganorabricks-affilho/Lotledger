@@ -16,7 +16,7 @@
   <article>
     <span>Order total</span>
     <strong>{{ money(order.items_cents) }}</strong>
-    <em>from {{ order.platform }}{% if order.is_brickowl %} (includes extras){% endif %}</em>
+    <em>{% if order.is_bricklink %}grand total from BrickLink (incl. tax){% elif order.is_brickowl %}from BrickOwl (includes extras){% else %}from {{ order.platform }}{% endif %}</em>
   </article>
   <article>
     <span>Item costs</span>
@@ -26,8 +26,15 @@
   <article>
     <span>Shipping</span>
     <strong>{{ money(order.shipping_cents) }}</strong>
-    <em>{% if order.is_bricklink %}from BrickLink / editable{% else %}added manually{% endif %}</em>
+    <em>{% if order.is_bricklink %}your shipping cost (buyer shipping is in order total){% else %}added manually{% endif %}</em>
   </article>
+  {% if order.has_tax %}
+  <article class="down">
+    <span>Tax</span>
+    <strong>−{{ money(order.tax_cents) }}</strong>
+    <em>sales tax / VAT from BrickLink</em>
+  </article>
+  {% endif %}
   {% if order.has_payment_fee %}
   <article class="down">
     <span>{{ order.payment_fee_label }}</span>
@@ -44,7 +51,7 @@
   <article class="down">
     <span>BrickLink fee</span>
     <strong>−{{ money(order.bricklink_fee_cents) }}</strong>
-    <em>order total × 3%</em>
+    <em>item cost × 3% ({{ money(order.bricklink_fee_base_cents) }} = total − tax − buyer shipping)</em>
   </article>
   {% else %}
   <article class="down">
@@ -57,7 +64,7 @@
     <span>Net gain</span>
     <strong>{{ money(order.net_cents) }}</strong>
     {% if order.is_bricklink %}
-    <em>order total − shipping{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickLink 3% · split across items</em>
+    <em>grand total − tax − shipping{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickLink 3% · split across items</em>
     {% else %}
     <em>order total − shipping{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickOwl · split across items</em>
     {% endif %}
@@ -99,7 +106,7 @@
         <tr>
           <td>
             {% if line.image_url %}
-            <img class="thumb" src="{{ line.image_url }}" alt="">
+            <img class="thumb" src="{{ line.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
             {% else %}
             —
             {% endif %}

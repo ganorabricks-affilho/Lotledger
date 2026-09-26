@@ -16,7 +16,7 @@
 </div>
 
 {% if not lot.has_details %}
-<p class="empty">This lot is pending details. Import the BrickStore XML of what you listed. Until then it is not valid for sale comparison.</p>
+<p class="empty">This lot is pending details. Import BrickLink inventory lots added on a date. Until then it is not valid for sale comparison.</p>
 {% endif %}
 
 <div class="stats compact">
@@ -43,45 +43,89 @@
 
 <section class="panel">
   <div class="panel-head">
-    <h2>Listing details</h2>
+    <h2>Listing details{% if lot.details_locked %} · locked{% endif %}</h2>
     {% if lot.has_details %}
-    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} parts · listed {{ money(lot.listed_value_cents) }}</span>
+    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} pcs · listed {{ money(lot.listed_value_cents) }}</span>
     {% endif %}
   </div>
-  <form class="form" method="post" action="{{ url_for('lot_details', lot_id=lot.id) }}" enctype="multipart/form-data">
-    <label>BrickStore XML
-      <input type="file" name="xml_file" accept=".xml,text/xml">
-    </label>
-    <label>Or local path
-      <input name="xml_path" placeholder="/Users/…/Brickstore/minifigs goodwill.xml">
-    </label>
-    <button type="submit">{% if lot.has_details %}Replace listing{% else %}Add listing details{% endif %}</button>
+  {% if lot.has_details or lot.details_locked %}
+  <form method="post" action="{{ url_for('lot_details_lock', lot_id=lot.id) }}" style="margin-bottom: 12px;">
+    {% if lot.details_locked %}
+    <input type="hidden" name="locked" value="0">
+    <button type="submit">Unlock listing</button>
+    <p class="lede">Listing is locked — import and delete are disabled.</p>
+    {% else %}
+    <input type="hidden" name="locked" value="1">
+    <button type="submit">Lock listing</button>
+    <p class="lede">Lock to prevent accidental imports or deletes.</p>
+    {% endif %}
   </form>
+  {% endif %}
+  {% if not lot.details_locked %}
+  {% if has_bricklink_creds %}
+  <form class="form" method="post" action="{{ url_for('lot_details', lot_id=lot.id) }}" id="bl-inventory-import">
+    <label>BrickLink lots added on
+      <input type="date" name="created_on" required value="{{ lot.purchased_on or '' }}">
+    </label>
+    <p class="lede">Imports inventory lots whose <code>date_created</code> matches that day and <strong>appends</strong> them. Import again with another date to add more. Duplicates (same lot ID) are skipped. Sale rate applies to unit price when &gt; 0.</p>
+    <div class="hero-actions">
+      <button type="submit" id="bl-inventory-import-btn">Import date</button>
+    </div>
+    <p class="import-status" id="bl-inventory-import-status" hidden>Fetching BrickLink inventory… this can take a bit.</p>
+  </form>
+  {% else %}
+  <p class="empty">Add BrickLink OAuth credentials in <a href="{{ url_for('settings') }}">Settings</a> to import listing details.</p>
+  {% endif %}
+  {% if lot.has_details %}
+  <form method="post" action="{{ url_for('lot_details_clear', lot_id=lot.id) }}" style="margin-top: 12px;" onsubmit="return confirm('Delete all listing rows for this lot?')">
+    <button class="danger" type="submit">Delete all listing rows</button>
+  </form>
+  {% endif %}
+  {% endif %}
   {% if lot.has_details %}
   <p class="lede">From {{ lot.details_filename }}{% if lot.details_imported_at %} · imported {{ lot.details_imported_at }}{% endif %}</p>
   <div class="table-scroll">
     <table>
       <thead>
         <tr>
-          <th>Type</th>
-          <th>Item</th>
-          <th>Color</th>
+          <th></th>
+          <th>Lot ID</th>
+          <th>Name</th>
           <th>Qty</th>
           <th>List price</th>
-          <th>Condition</th>
+          <th>Sale</th>
           <th>Remarks</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
         {% for item in lot.listed_items %}
         <tr>
-          <td>{{ item_types.get(item.item_type, item.item_type) }}</td>
-          <td>{{ item.item_id }}</td>
-          <td>{{ item.color }}</td>
+          <td>
+            {% if item.image_url %}
+            <img class="thumb" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
+            {% else %}
+            —
+            {% endif %}
+          </td>
+          <td>{{ item.bl_lot_id or '—' }}</td>
+          <td>{{ item.item_name or item.item_id }}<small>{{ item.item_id }} · {{ item.item_type }} · {{ item.condition }}</small></td>
           <td>{{ item.qty }}</td>
           <td>{{ money(item.price_cents) }}</td>
-          <td>{{ conditions.get(item.condition, item.condition) }}</td>
-          <td>{{ item.remarks }}</td>
+          <td>{% if item.sale_rate %}{{ item.sale_rate }}%{% else %}—{% endif %}</td>
+          <td>{{ item.remarks or '—' }}</td>
+          <td>
+            <details class="ids">
+              <summary>⋯</summary>
+              <p>Color {{ item.color or '—' }}</p>
+              <p>Category {{ item.category or '—' }}</p>
+            </details>
+            {% if not lot.details_locked %}
+            <form class="inline" method="post" action="{{ url_for('lot_details_item_delete', lot_id=lot.id, item_id=item.id) }}" onsubmit="return confirm('Delete this listing row?')">
+              <button class="linkish" type="submit">Delete</button>
+            </form>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -122,4 +166,19 @@
   <p class="empty">No sold rows matched to this lot yet. Matching comes after sales are imported.</p>
   {% endif %}
 </section>
+{% if has_bricklink_creds and not lot.details_locked %}
+<script>
+  const form = document.getElementById("bl-inventory-import");
+  const btn = document.getElementById("bl-inventory-import-btn");
+  const status = document.getElementById("bl-inventory-import-status");
+  if (form && btn && status) {
+    form.addEventListener("submit", () => {
+      btn.disabled = true;
+      btn.textContent = "Importing…";
+      status.hidden = false;
+      document.body.classList.add("is-busy");
+    });
+  }
+</script>
+{% endif %}
 {% endblock %}

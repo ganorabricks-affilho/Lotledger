@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 import bricklink
@@ -10,7 +8,6 @@ import database as db
 app = Flask(__name__)
 app.secret_key = "lotledger-local-dev"
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
-UPLOAD_DIR = Path(__file__).resolve().parent / "data" / "uploads"
 db.init_db()
 
 SOURCES = ["BrickLink", "BrickOwl", "eBay", "Goodwill", "Facebook Marketplace", "Other"]
@@ -87,16 +84,71 @@ def lot_details(lot_id):
     if lot is None:
         flash("Lot not found.")
         return redirect(url_for("dashboard"))
+    if lot.get("details_locked"):
+        flash("Listing details are locked. Unlock to import more.")
+        return redirect(url_for("lot_detail", lot_id=lot_id))
     try:
-        filename, xml_text = _read_xml_input()
-        items = brickstore.parse_inventory(xml_text)
+        creds = bricklink.creds_from_settings(db.get_setting)
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("settings"))
+    created_on = (request.form.get("created_on") or "").strip() or lot.get("purchased_on") or ""
+    try:
+        items = bricklink.inventories_for_date(creds, created_on)
     except ValueError as exc:
         flash(str(exc))
         return redirect(url_for("lot_detail", lot_id=lot_id))
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    (UPLOAD_DIR / f"{lot_id}_{filename}").write_text(xml_text, encoding="utf-8")
-    db.replace_listing(lot_id, filename, items)
-    flash(f"Imported {len(items)} lots ({sum(item['qty'] for item in items)} parts) from {filename}. This lot is now valid.")
+    if not items:
+        flash(f"No BrickLink inventory lots found with date_created on {created_on}.")
+        return redirect(url_for("lot_detail", lot_id=lot_id))
+    label = f"bricklink:{created_on}"
+    result = db.append_listing(lot_id, label, items)
+    flash(
+        f"Imported {result['added']} new lots for {created_on}"
+        + (f" ({result['skipped']} already on this lot)." if result["skipped"] else ".")
+    )
+    return redirect(url_for("lot_detail", lot_id=lot_id))
+
+
+@app.route("/lots/<int:lot_id>/details/clear", methods=["POST"])
+def lot_details_clear(lot_id):
+    lot = db.get_lot(lot_id)
+    if lot is None:
+        flash("Lot not found.")
+        return redirect(url_for("dashboard"))
+    if lot.get("details_locked"):
+        flash("Listing details are locked. Unlock to delete rows.")
+        return redirect(url_for("lot_detail", lot_id=lot_id))
+    deleted = db.clear_listing(lot_id)
+    flash(f"Removed {deleted} listing row{'s' if deleted != 1 else ''}. Lot is pending details again.")
+    return redirect(url_for("lot_detail", lot_id=lot_id))
+
+
+@app.route("/lots/<int:lot_id>/details/<int:item_id>/delete", methods=["POST"])
+def lot_details_item_delete(lot_id, item_id):
+    lot = db.get_lot(lot_id)
+    if lot is None:
+        flash("Lot not found.")
+        return redirect(url_for("dashboard"))
+    if lot.get("details_locked"):
+        flash("Listing details are locked. Unlock to delete rows.")
+        return redirect(url_for("lot_detail", lot_id=lot_id))
+    if db.delete_listing_item(lot_id, item_id):
+        flash("Listing row deleted.")
+    else:
+        flash("Listing row not found.")
+    return redirect(url_for("lot_detail", lot_id=lot_id))
+
+
+@app.route("/lots/<int:lot_id>/details/lock", methods=["POST"])
+def lot_details_lock(lot_id):
+    lot = db.get_lot(lot_id)
+    if lot is None:
+        flash("Lot not found.")
+        return redirect(url_for("dashboard"))
+    locked = request.form.get("locked") == "1"
+    db.set_lot_details_locked(lot_id, locked)
+    flash("Listing details locked." if locked else "Listing details unlocked.")
     return redirect(url_for("lot_detail", lot_id=lot_id))
 
 
@@ -284,6 +336,38 @@ def brickowl_try():
     return jsonify(result)
 
 
+@app.route("/lab/bricklink")
+def bricklink_lab():
+    token = db.get_setting("bricklink_token")
+    return render_template(
+        "bricklink_lab.html",
+        has_creds=db.has_bricklink_creds(),
+        creds_hint=f"…{token[-4:]}" if len(token) >= 4 else "",
+    )
+
+
+@app.route("/lab/bricklink/try", methods=["POST"])
+def bricklink_try():
+    try:
+        creds = bricklink.creds_from_settings(db.get_setting)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    data = request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    params = data.get("params") or {}
+    method = (data.get("method") or "GET").strip().upper()
+    body = data.get("body")
+    if not isinstance(params, dict):
+        return jsonify({"error": "params must be an object."}), 400
+    if body is not None and not isinstance(body, (dict, list)):
+        return jsonify({"error": "body must be a JSON object or array."}), 400
+    try:
+        result = bricklink.lab_call(creds, path, params, method=method, body=body)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
+
+
 def _lot_from_form():
     title = request.form.get("title", "").strip()
     purchased_on = request.form.get("purchased_on", "").strip()
@@ -299,24 +383,6 @@ def _lot_from_form():
         "handling_cents": db.parse_money(request.form.get("handling")),
         "notes": request.form.get("notes", "").strip(),
     }, None
-
-
-def _read_xml_input():
-    uploaded = request.files.get("xml_file")
-    path_value = (request.form.get("xml_path") or "").strip()
-    if uploaded and uploaded.filename:
-        filename = Path(uploaded.filename).name
-        if not filename.lower().endswith(".xml"):
-            raise ValueError("Use a .xml BrickStore inventory file.")
-        return filename, uploaded.read().decode("utf-8", errors="replace")
-    if path_value:
-        path = Path(path_value).expanduser()
-        if path.suffix.lower() != ".xml":
-            raise ValueError("Use a .xml BrickStore inventory file.")
-        if not path.is_file():
-            raise ValueError(f"No file at {path}")
-        return path.name, path.read_text(encoding="utf-8", errors="replace")
-    raise ValueError("Upload a BrickStore XML or paste its local path.")
 
 
 if __name__ == "__main__":
