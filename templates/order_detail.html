@@ -16,7 +16,7 @@
   <article>
     <span>Order total</span>
     <strong>{{ money(order.items_cents) }}</strong>
-    <em>from BrickOwl (includes extras)</em>
+    <em>from {{ order.platform }}{% if order.is_brickowl %} (includes extras){% endif %}</em>
   </article>
   <article>
     <span>Item costs</span>
@@ -26,19 +26,41 @@
   <article>
     <span>Shipping</span>
     <strong>{{ money(order.shipping_cents) }}</strong>
-    <em>added manually</em>
+    <em>{% if order.is_bricklink %}from BrickLink / editable{% else %}added manually{% endif %}</em>
   </article>
-  {% if order.is_paypal %}
+  {% if order.has_payment_fee %}
   <article class="down">
-    <span>PayPal fee</span>
+    <span>{{ order.payment_fee_label }}</span>
     <strong>−{{ money(order.payment_fee_cents) }}</strong>
-    <em>(order total × 3.49%) + $0.49</em>
+    <em>{{ order.payment_fee_formula }}</em>
+  </article>
+  {% endif %}
+  <article class="down">
+    <span>BrickFreedom fee</span>
+    <strong>−{{ money(order.brickfreedom_fee_cents) }}</strong>
+    <em>order total × 1%</em>
+  </article>
+  {% if order.is_bricklink %}
+  <article class="down">
+    <span>BrickLink fee</span>
+    <strong>−{{ money(order.bricklink_fee_cents) }}</strong>
+    <em>order total × 3%</em>
+  </article>
+  {% else %}
+  <article class="down">
+    <span>BrickOwl fee</span>
+    <strong>−{{ money(order.brickowl_fee_cents) }}</strong>
+    <em>item costs × 2.65%</em>
   </article>
   {% endif %}
   <article class="{{ 'up' if order.net_cents >= 0 else 'down' }}">
-    <span>Net for now</span>
+    <span>Net gain</span>
     <strong>{{ money(order.net_cents) }}</strong>
-    <em>order total − shipping{% if order.is_paypal %} − PayPal fee{% endif %}</em>
+    {% if order.is_bricklink %}
+    <em>order total − shipping{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickLink 3% · split across items</em>
+    {% else %}
+    <em>order total − shipping{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickOwl · split across items</em>
+    {% endif %}
   </article>
 </div>
 
@@ -56,7 +78,7 @@
 <section class="panel">
   <div class="panel-head">
     <h2>Order items</h2>
-    <span>Item costs {{ money3(order.lines_cents) }} · will not match order total</span>
+    <span>Item costs {{ money3(order.lines_cents) }} · net gain {{ money(order.net_cents) }} split by line share</span>
   </div>
   <div class="table-scroll">
     <table>
@@ -64,12 +86,10 @@
         <tr>
           <th></th>
           <th>Name</th>
-          <th>Type</th>
-          <th>Color</th>
-          <th>Condition</th>
           <th>Qty</th>
           <th>Cost</th>
           <th>Line total</th>
+          <th>Net gain</th>
           <th>Personal note</th>
           <th></th>
         </tr>
@@ -85,16 +105,17 @@
             {% endif %}
           </td>
           <td>{{ line.item_name or '—' }}</td>
-          <td>{{ line.item_type or '—' }}</td>
-          <td>{{ line.color_name or '—' }}</td>
-          <td>{{ line.condition or '—' }}</td>
           <td>{{ line.qty }}</td>
           <td>{{ money3(line.price_cents) }}</td>
           <td>{{ money3(line.qty * line.price_cents) }}</td>
+          <td class="{{ 'up' if line.net_gain_cents >= 0 else 'down' }}">{{ money(line.net_gain_cents) }}</td>
           <td>{{ line.personal_note or '—' }}</td>
           <td>
             <details class="ids">
               <summary>⋯</summary>
+              <p>Type {{ line.item_type or '—' }}</p>
+              <p>Color {{ line.color_name or '—' }}</p>
+              <p>Condition {{ line.condition or '—' }}</p>
               <p>BOID {{ line.boid or '—' }}</p>
               <p>Lot ID {{ line.owl_lot_id or '—' }}</p>
               <p>BL lot ID {{ line.bl_lot_id or '—' }}</p>
@@ -105,8 +126,9 @@
       </tbody>
       <tfoot>
         <tr>
-          <td colspan="7">Item costs</td>
+          <td colspan="4">Totals</td>
           <td>{{ money3(order.lines_cents) }}</td>
+          <td>{{ money(order.net_cents) }}</td>
           <td colspan="2"></td>
         </tr>
       </tfoot>

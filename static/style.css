@@ -107,6 +107,21 @@ td small, td a + small { display: block; }
 }
 .bar i { display: block; height: 100%; background: var(--brick); }
 .grid-2 { display: grid; grid-template-columns: 1fr 1.1fr; gap: 18px; }
+.sales-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.sales-orders .table-scroll.wide {
+  max-height: none;
+  overflow-x: auto;
+}
+.sales-orders table th,
+.sales-orders table td {
+  white-space: nowrap;
+  padding-right: 14px;
+}
 .form label { display: block; margin-bottom: 12px; font-size: 0.92rem; }
 input, select, textarea {
   width: 100%;
@@ -222,5 +237,5 @@ button:disabled {
   to { transform: rotate(360deg); }
 }
 @media (max-width: 800px) {
-  .hero, .grid-2, .stats, .stats.compact, .row, .split { grid-template-columns: 1fr; display: grid; }
+  .hero, .grid-2, .sales-layout, .stats, .stats.compact, .row, .split { grid-template-columns: 1fr; display: grid; }
 }

@@ -11,6 +11,7 @@
   <p>A key is saved{{ ' (' ~ key_hint ~ ')' if key_hint else '' }}.</p>
   {% endif %}
   <form method="post">
+    <input type="hidden" name="action" value="save_brickowl">
     <label>API key
       <input name="brickowl_api_key" type="password" autocomplete="off" placeholder="Paste a new key to replace">
     </label>
@@ -22,6 +23,38 @@
   <form method="post" style="margin-top: 12px;">
     <input type="hidden" name="action" value="clear_brickowl">
     <button class="danger" type="submit">Remove key</button>
+  </form>
+  {% endif %}
+</section>
+
+<section class="panel form" style="max-width: 560px; margin-top: 24px;">
+  <h2>BrickLink API</h2>
+  <p class="lede">OAuth 1.0a credentials from <a href="https://www.bricklink.com/v3/api.page" target="_blank" rel="noopener">BrickLink API</a>. Register your public IP (or 0.0.0.0 if allowed) before importing.</p>
+  {% if has_bricklink_creds %}
+  <p>Credentials saved{{ ' (' ~ bricklink_hint ~ ')' if bricklink_hint else '' }}.</p>
+  {% endif %}
+  <form method="post">
+    <input type="hidden" name="action" value="save_bricklink">
+    <label>Consumer key
+      <input name="bricklink_consumer_key" type="password" autocomplete="off" placeholder="Paste to replace">
+    </label>
+    <label>Consumer secret
+      <input name="bricklink_consumer_secret" type="password" autocomplete="off" placeholder="Paste to replace">
+    </label>
+    <label>Token
+      <input name="bricklink_token" type="password" autocomplete="off" placeholder="Paste to replace">
+    </label>
+    <label>Token secret
+      <input name="bricklink_token_secret" type="password" autocomplete="off" placeholder="Paste to replace">
+    </label>
+    <div class="hero-actions">
+      <button type="submit">Save BrickLink credentials</button>
+    </div>
+  </form>
+  {% if has_bricklink_creds %}
+  <form method="post" style="margin-top: 12px;">
+    <input type="hidden" name="action" value="clear_bricklink">
+    <button class="danger" type="submit">Remove BrickLink credentials</button>
   </form>
   {% endif %}
 </section>

@@ -2,17 +2,17 @@
 {% block title %}Sales · Lotledger{% endblock %}
 {% block content %}
 <h1>Sales</h1>
-<p class="lede">BrickOwl orders come from the API. BrickLink still uses a file until that import is wired.</p>
+<p class="lede">Import store orders from BrickOwl or BrickLink. Duplicates (same order ID) are skipped.</p>
 
-<section class="grid-2">
-  <div>
+<section class="sales-layout">
+  <div class="sales-imports">
     <form class="panel form" id="brickowl-import" method="post" action="{{ url_for('sales_brickowl_import') }}">
       <h2>Import BrickOwl</h2>
       {% if has_brickowl_key %}
       <label>How many recent orders
         <input type="number" name="limit" min="1" max="100" value="{{ import_limit or 10 }}">
       </label>
-      <p class="lede">Defaults to the last 10 store orders. Duplicates (same order ID) are skipped.</p>
+      <p class="lede">Defaults to the last 10 store orders.</p>
       <button type="submit" id="brickowl-import-btn">Import BrickOwl orders</button>
       <p class="import-status" id="brickowl-import-status" hidden>Fetching orders from BrickOwl… this can take a bit.</p>
       {% else %}
@@ -20,29 +20,37 @@
       {% endif %}
     </form>
 
-    <form class="panel form" method="post" enctype="multipart/form-data">
-      <h2>Import BrickLink file</h2>
-      <input type="hidden" name="format" value="bricklink">
-      <label>File
-        <input type="file" name="sales_file" required>
+    <form class="panel form" id="bricklink-import" method="post" action="{{ url_for('sales_bricklink_import') }}">
+      <h2>Import BrickLink</h2>
+      {% if has_bricklink_creds %}
+      <label>How many recent orders
+        <input type="number" name="limit" min="1" max="100" value="{{ import_limit or 10 }}">
       </label>
-      <button type="submit">Upload BrickLink file</button>
+      <p class="lede">Defaults to the last 10 received store orders. Your public IP must be registered on BrickLink.</p>
+      <button type="submit" id="bricklink-import-btn">Import BrickLink orders</button>
+      <p class="import-status" id="bricklink-import-status" hidden>Fetching orders from BrickLink… this can take a bit.</p>
+      {% else %}
+      <p class="empty">Add BrickLink OAuth credentials in <a href="{{ url_for('settings') }}">Settings</a> first.</p>
+      {% endif %}
     </form>
   </div>
 
-  <div class="panel">
+  <div class="panel sales-orders">
     <h2>Orders</h2>
     {% if orders %}
+    <div class="table-scroll wide">
     <table>
       <thead>
         <tr>
           <th>ID</th>
+          <th>Src</th>
           <th>Date</th>
           <th>Payment</th>
           <th>Quantity</th>
           <th>Lots</th>
           <th>Total</th>
           <th>Shipping</th>
+          <th>Net gain</th>
           <th></th>
         </tr>
       </thead>
@@ -50,12 +58,14 @@
         {% for order in orders %}
         <tr>
           <td><a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a></td>
+          <td>{{ 'BL' if order.is_bricklink else 'BO' }}</td>
           <td>{{ order.sold_on }}</td>
           <td>{{ order.payment_method or '—' }}</td>
           <td>{{ order.display_qty }}</td>
           <td>{{ order.display_lots }}</td>
           <td>{{ money(order.items_cents) }}</td>
           <td>{{ money(order.shipping_cents) }}</td>
+          <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
           <td>
             <form class="inline" method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete order {{ order.order_number }}? You can reimport it later.')">
               <button class="linkish" type="submit">Delete</button>
@@ -65,22 +75,26 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
     <p class="empty">No orders yet.</p>
     {% endif %}
   </div>
 </section>
-{% if has_brickowl_key %}
 <script>
-  const form = document.getElementById("brickowl-import");
-  const btn = document.getElementById("brickowl-import-btn");
-  const status = document.getElementById("brickowl-import-status");
-  form.addEventListener("submit", () => {
-    btn.disabled = true;
-    btn.textContent = "Importing…";
-    status.hidden = false;
-    document.body.classList.add("is-busy");
-  });
+  function wireImport(formId, btnId, statusId) {
+    const form = document.getElementById(formId);
+    if (!form) return;
+    const btn = document.getElementById(btnId);
+    const status = document.getElementById(statusId);
+    form.addEventListener("submit", () => {
+      btn.disabled = true;
+      btn.textContent = "Importing…";
+      status.hidden = false;
+      document.body.classList.add("is-busy");
+    });
+  }
+  wireImport("brickowl-import", "brickowl-import-btn", "brickowl-import-status");
+  wireImport("bricklink-import", "bricklink-import-btn", "bricklink-import-status");
 </script>
-{% endif %}
 {% endblock %}

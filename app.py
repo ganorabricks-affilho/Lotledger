@@ -2,6 +2,7 @@ from pathlib import Path
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
+import bricklink
 import brickowl
 import brickstore
 import database as db
@@ -32,6 +33,7 @@ def inject_helpers():
         "item_types": brickstore.ITEM_TYPES,
         "conditions": brickstore.CONDITIONS,
         "has_brickowl_key": bool(db.get_setting("brickowl_api_key")),
+        "has_bricklink_creds": db.has_bricklink_creds(),
     }
 
 
@@ -105,27 +107,8 @@ def lot_delete(lot_id):
     return redirect(url_for("dashboard"))
 
 
-@app.route("/sales", methods=["GET", "POST"])
+@app.route("/sales")
 def sales():
-    if request.method == "POST":
-        fmt = (request.form.get("format") or "").strip().lower()
-        labels = dict(SALE_FORMATS)
-        if fmt not in labels:
-            flash("Choose BrickLink or BrickOwl before importing.")
-            return redirect(url_for("sales"))
-        uploaded = request.files.get("sales_file")
-        if not uploaded or not uploaded.filename:
-            flash("Choose a sales file to import.")
-            return redirect(url_for("sales"))
-        filename = Path(uploaded.filename).name
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        dest = UPLOAD_DIR / f"{fmt}_{filename}"
-        uploaded.save(dest)
-        flash(
-            f"{labels[fmt]} file received ({filename}). "
-            "This format’s import parser is next — send the file details when you’re ready."
-        )
-        return redirect(url_for("sales"))
     return render_template("sales.html", orders=db.list_orders(), import_limit=10)
 
 
@@ -154,6 +137,32 @@ def sales_brickowl_import():
     return redirect(url_for("sales"))
 
 
+@app.route("/sales/bricklink", methods=["POST"])
+def sales_bricklink_import():
+    try:
+        creds = bricklink.creds_from_settings(db.get_setting)
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("settings"))
+    try:
+        limit = int(request.form.get("limit") or 10)
+    except ValueError:
+        limit = 10
+    limit = max(1, min(limit, 100))
+    try:
+        existing = db.existing_order_numbers("bricklink")
+        parsed = bricklink.collect_new_orders(creds, limit, existing)
+        result = db.import_orders(parsed)
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("sales"))
+    flash(
+        f"Looked at the last {limit} BrickLink orders. "
+        f"Imported {result['imported']} new ({result['lines']} lots). Duplicates skipped."
+    )
+    return redirect(url_for("sales"))
+
+
 @app.route("/sales/<int:order_id>")
 def order_detail(order_id):
     order = db.get_order(order_id)
@@ -174,7 +183,7 @@ def order_costs(order_id):
         db.parse_money(request.form.get("shipping")),
         db.parse_money(request.form.get("other_costs")),
     )
-    flash("Shipping and other costs saved on this order.")
+    flash("Shipping saved. Net gain was split across items.")
     return redirect(url_for("order_detail", order_id=order_id))
 
 
@@ -190,22 +199,49 @@ def order_delete(order_id):
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     if request.method == "POST":
-        if request.form.get("action") == "clear_brickowl":
+        action = request.form.get("action") or ""
+        if action == "clear_brickowl":
             db.set_setting("brickowl_api_key", "")
             flash("BrickOwl API key removed.")
-        else:
+        elif action == "save_brickowl":
             key = request.form.get("brickowl_api_key", "").strip()
             if not key:
                 flash("Paste a BrickOwl API key, or use Remove key.")
             else:
                 db.set_setting("brickowl_api_key", key)
                 flash("BrickOwl API key saved.")
+        elif action == "clear_bricklink":
+            for key in bricklink.CRED_KEYS:
+                db.set_setting(key, "")
+            flash("BrickLink credentials removed.")
+        elif action == "save_bricklink":
+            fields = {
+                "bricklink_consumer_key": request.form.get("bricklink_consumer_key", "").strip(),
+                "bricklink_consumer_secret": request.form.get(
+                    "bricklink_consumer_secret", ""
+                ).strip(),
+                "bricklink_token": request.form.get("bricklink_token", "").strip(),
+                "bricklink_token_secret": request.form.get(
+                    "bricklink_token_secret", ""
+                ).strip(),
+            }
+            if not all(fields.values()):
+                flash("Paste all four BrickLink OAuth values to save.")
+            else:
+                for key, value in fields.items():
+                    db.set_setting(key, value)
+                flash("BrickLink credentials saved.")
+        else:
+            flash("Unknown settings action.")
         return redirect(url_for("settings"))
     key = db.get_setting("brickowl_api_key")
+    token = db.get_setting("bricklink_token")
     return render_template(
         "settings.html",
         has_brickowl_key=bool(key),
         key_hint=f"…{key[-4:]}" if len(key) >= 4 else "",
+        has_bricklink_creds=db.has_bricklink_creds(),
+        bricklink_hint=f"…{token[-4:]}" if len(token) >= 4 else "",
     )
 
 

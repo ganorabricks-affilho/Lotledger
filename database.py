@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS order_lines (
     owl_lot_id TEXT NOT NULL DEFAULT '',
     bl_lot_id TEXT NOT NULL DEFAULT '',
     personal_note TEXT NOT NULL DEFAULT '',
+    net_gain_cents INTEGER NOT NULL DEFAULT 0,
     lot_id INTEGER,
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
     FOREIGN KEY (lot_id) REFERENCES lots(id) ON DELETE SET NULL
@@ -138,6 +139,8 @@ def init_db() -> None:
         for name in ("image_url", "boid", "owl_lot_id", "bl_lot_id", "personal_note"):
             if name not in line_cols:
                 conn.execute(f"ALTER TABLE order_lines ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+        if "net_gain_cents" not in line_cols:
+            conn.execute("ALTER TABLE order_lines ADD COLUMN net_gain_cents INTEGER NOT NULL DEFAULT 0")
         scale = conn.execute(
             "SELECT value FROM settings WHERE key = ?", ("order_line_price_scale",)
         ).fetchone()
@@ -187,6 +190,16 @@ def set_setting(key: str, value: str) -> None:
             "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+
+def has_bricklink_creds() -> bool:
+    keys = (
+        "bricklink_consumer_key",
+        "bricklink_consumer_secret",
+        "bricklink_token",
+        "bricklink_token_secret",
+    )
+    return all(get_setting(key) for key in keys)
 
 
 def existing_order_numbers(platform_key: str):
@@ -351,6 +364,7 @@ def import_orders(parsed_orders: list) -> dict:
     imported = 0
     skipped = 0
     line_count = 0
+    imported_ids = []
     with get_conn() as conn:
         existing = {
             (row["platform_key"], row["order_number"])
@@ -365,8 +379,9 @@ def import_orders(parsed_orders: list) -> dict:
                 """
                 INSERT INTO orders (
                     sold_on, sold_at, platform_key, platform, order_number, currency,
-                    status, payment_method, header_lots, header_qty, header_total_cents
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, payment_method, header_lots, header_qty, header_total_cents,
+                    shipping_cents
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order["sold_on"],
@@ -380,6 +395,7 @@ def import_orders(parsed_orders: list) -> dict:
                     order.get("header_lots") or 0,
                     order.get("header_qty") or 0,
                     order.get("header_total_cents") or 0,
+                    order.get("shipping_cents") or 0,
                 ),
             )
             order_id = cur.lastrowid
@@ -416,6 +432,9 @@ def import_orders(parsed_orders: list) -> dict:
             existing.add(key)
             imported += 1
             line_count += len(order["lines"])
+            imported_ids.append(order_id)
+    for order_id in imported_ids:
+        persist_line_net_gains(order_id)
     return {"imported": imported, "skipped": skipped, "lines": line_count}
 
 
@@ -460,8 +479,43 @@ def get_order(order_id: int):
             "lines_cents": sum(line["qty"] * line["price_cents"] for line in lines),
         }
     )
-    order["lines"] = lines
+    order["lines"] = allocate_net_gain(lines, order["net_cents"])
     return order
+
+
+def allocate_net_gain(lines: list, net_cents: int) -> list:
+    """Split net gain across lines by share of item cost (qty × price)."""
+    weights = [max(0, int(line.get("qty") or 0) * int(line.get("price_cents") or 0)) for line in lines]
+    total_weight = sum(weights)
+    for line, weight in zip(lines, weights):
+        line["line_total_cents"] = weight
+    if not lines:
+        return lines
+    if total_weight <= 0 or net_cents == 0:
+        for line in lines:
+            line["net_gain_cents"] = 0
+        return lines
+
+    rounded = [int(round(net_cents * weight / total_weight)) for weight in weights]
+    drift = net_cents - sum(rounded)
+    if drift != 0 and rounded:
+        idx = max(range(len(weights)), key=lambda i: weights[i])
+        rounded[idx] += drift
+    for line, share in zip(lines, rounded):
+        line["net_gain_cents"] = share
+    return lines
+
+
+def persist_line_net_gains(order_id: int) -> None:
+    order = get_order(order_id)
+    if order is None:
+        return
+    with get_conn() as conn:
+        for line in order["lines"]:
+            conn.execute(
+                "UPDATE order_lines SET net_gain_cents = ? WHERE id = ?",
+                (line.get("net_gain_cents") or 0, line["id"]),
+            )
 
 
 def update_order_costs(order_id: int, shipping_cents: int, other_costs_cents: int) -> None:
@@ -470,6 +524,7 @@ def update_order_costs(order_id: int, shipping_cents: int, other_costs_cents: in
             "UPDATE orders SET shipping_cents = ?, other_costs_cents = ? WHERE id = ?",
             (shipping_cents, other_costs_cents, order_id),
         )
+    persist_line_net_gains(order_id)
 
 
 def delete_order(order_id: int) -> None:
@@ -496,7 +551,7 @@ def summary():
     unmatched = unmatched_lines()
     invested = sum(lot["invested_cents"] for lot in lots)
     revenue = sum(lot["revenue_cents"] for lot in lots)
-    unmatched_net = sum(line["qty"] * line["price_cents"] for line in unmatched)
+    unmatched_net = sum(int(line.get("net_gain_cents") or 0) for line in unmatched)
     order_net = sum(order["net_cents"] for order in orders)
     profit = revenue - invested
     return {
@@ -524,15 +579,47 @@ def _enrich_order(row) -> dict:
     shipping = order.get("shipping_cents") or 0
     other = order.get("other_costs_cents") or 0
     payment = (order.get("payment_method") or "").strip().lower()
+    platform_key = (order.get("platform_key") or "").strip().lower()
     fee_cents = 0
+    fee_label = ""
+    fee_formula = ""
     if "paypal" in payment:
         fee_cents = int(round(items * 0.0349)) + 49
+        fee_label = "PayPal fee"
+        fee_formula = "(order total × 3.49%) + $0.49"
+    elif "stripe" in payment:
+        fee_cents = int(round(items * 0.029)) + 30
+        fee_label = "Stripe fee"
+        fee_formula = "(order total × 2.9%) + $0.30"
+    brickfreedom_fee_cents = int(round(items * 0.01))
+    brickowl_fee_cents = 0
+    bricklink_fee_cents = 0
+    if platform_key == "bricklink":
+        bricklink_fee_cents = int(round(items * 0.03))
+    else:
+        item_costs_cents = int(round((lines_cents or 0) / 10))
+        brickowl_fee_cents = int(round(item_costs_cents * 0.0265))
     order["items_cents"] = items
     order["display_lots"] = order.get("header_lots") or order.get("line_count") or 0
     order["display_qty"] = order.get("header_qty") or order.get("part_count") or 0
     order["payment_fee_cents"] = fee_cents
-    order["is_paypal"] = fee_cents > 0 or "paypal" in payment
-    order["net_cents"] = items - shipping - other - fee_cents
+    order["payment_fee_label"] = fee_label
+    order["payment_fee_formula"] = fee_formula
+    order["has_payment_fee"] = fee_cents > 0
+    order["brickfreedom_fee_cents"] = brickfreedom_fee_cents
+    order["brickowl_fee_cents"] = brickowl_fee_cents
+    order["bricklink_fee_cents"] = bricklink_fee_cents
+    order["is_bricklink"] = platform_key == "bricklink"
+    order["is_brickowl"] = platform_key != "bricklink"
+    order["net_cents"] = (
+        items
+        - shipping
+        - other
+        - fee_cents
+        - brickfreedom_fee_cents
+        - brickowl_fee_cents
+        - bricklink_fee_cents
+    )
     return order
 
 

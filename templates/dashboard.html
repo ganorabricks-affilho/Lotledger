@@ -37,7 +37,7 @@
   <article>
     <span>Unmatched rows</span>
     <strong>{{ money(summary.unmatched_net_cents) }}</strong>
-    <em>{{ summary.unmatched_count }} waiting to match to a lot</em>
+    <em>{{ summary.unmatched_count }} waiting to match · net gain</em>
   </article>
 </div>
 
@@ -90,7 +90,7 @@
     <h2>Unmatched sold rows</h2>
     <a href="{{ url_for('sales') }}">Open sales</a>
   </div>
-  <p class="empty">{{ summary.unmatched_count }} lots still need to be matched to a purchased lot ({{ money(summary.unmatched_net_cents) }}). Matching comes next — say what else you need on the order header and we’ll add it.</p>
+  <p class="empty">{{ summary.unmatched_count }} sold rows still need a purchased lot ({{ money(summary.unmatched_net_cents) }} net gain). Matching comes next.</p>
 </section>
 {% endif %}
 {% endblock %}
