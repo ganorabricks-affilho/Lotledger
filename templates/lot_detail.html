@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}{{ lot.title }} · Lotledger{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('dashboard') }}">P&amp;L</a> / lot</p>
+<div class="split">
+  <div>
+    <h1>{{ lot.title }}</h1>
+    <p class="lede">{{ lot.source }} · bought {{ lot.purchased_on }} · {{ lot.status }}</p>
+  </div>
+  <form method="post" action="{{ url_for('lot_delete', lot_id=lot.id) }}" onsubmit="return confirm('Delete this lot? Sales stay, unmatched.')">
+    <button class="danger" type="submit">Delete lot</button>
+  </form>
+</div>
+
+{% if not lot.has_details %}
+<p class="empty">This lot is pending details. Import the BrickStore XML of what you listed. Until then it is not valid for sale comparison.</p>
+{% endif %}
+
+<div class="stats compact">
+  <article>
+    <span>Total to recover</span>
+    <strong>{{ money(lot.invested_cents) }}</strong>
+    <em>{{ money(lot.cost_cents) }} cost · {{ money(lot.shipping_cents) }} ship · {{ money(lot.tax_cents) }} tax · {{ money(lot.handling_cents) }} handling</em>
+  </article>
+  <article>
+    <span>Net from sales</span>
+    <strong>{{ money(lot.net_cents) }}</strong>
+    <em>{{ lot.sale_count }} matched sale{{ 's' if lot.sale_count != 1 else '' }}</em>
+  </article>
+  <article class="{{ 'up' if lot.profit_cents >= 0 else 'down' }}">
+    <span>Profit</span>
+    <strong>{{ money(lot.profit_cents) }}</strong>
+    <em>{{ lot.recovered }}% of total recovered</em>
+  </article>
+</div>
+
+{% if lot.notes %}
+<p class="notes">{{ lot.notes }}</p>
+{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Listing details</h2>
+    {% if lot.has_details %}
+    <span>{{ lot.detail_count }} lines · {{ lot.listed_qty }} pcs · listed {{ money(lot.listed_value_cents) }}</span>
+    {% endif %}
+  </div>
+  <form class="form" method="post" action="{{ url_for('lot_details', lot_id=lot.id) }}" enctype="multipart/form-data">
+    <label>BrickStore XML
+      <input type="file" name="xml_file" accept=".xml,text/xml">
+    </label>
+    <label>Or local path
+      <input name="xml_path" placeholder="/Users/…/Brickstore/minifigs goodwill.xml">
+    </label>
+    <button type="submit">{% if lot.has_details %}Replace listing{% else %}Add listing details{% endif %}</button>
+  </form>
+  {% if lot.has_details %}
+  <p class="lede">From {{ lot.details_filename }}{% if lot.details_imported_at %} · imported {{ lot.details_imported_at }}{% endif %}</p>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Item</th>
+          <th>Color</th>
+          <th>Qty</th>
+          <th>List price</th>
+          <th>Condition</th>
+          <th>Remarks</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in lot.listed_items %}
+        <tr>
+          <td>{{ item_types.get(item.item_type, item.item_type) }}</td>
+          <td>{{ item.item_id }}</td>
+          <td>{{ item.color }}</td>
+          <td>{{ item.qty }}</td>
+          <td>{{ money(item.price_cents) }}</td>
+          <td>{{ conditions.get(item.condition, item.condition) }}</td>
+          <td>{{ item.remarks }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Matched sales</h2>
+    <a href="{{ url_for('sales') }}">Add sale</a>
+  </div>
+  {% if lot.sales %}
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Platform</th>
+        <th>Order</th>
+        <th>Gross</th>
+        <th>Fees</th>
+        <th>Net</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for sale in lot.sales %}
+      <tr>
+        <td>{{ sale.sold_on }}</td>
+        <td>{{ sale.platform }}</td>
+        <td>{{ sale.order_ref }}{% if sale.description %}<small>{{ sale.description }}</small>{% endif %}</td>
+        <td>{{ money(sale.gross_cents) }}</td>
+        <td>{{ money(sale.fees_cents) }}</td>
+        <td>{{ money(sale.gross_cents - sale.fees_cents) }}</td>
+        <td>
+          <form class="inline" method="post" action="{{ url_for('sale_match', sale_id=sale.id) }}">
+            <input type="hidden" name="lot_id" value="">
+            <input type="hidden" name="next" value="{{ url_for('lot_detail', lot_id=lot.id) }}">
+            <button type="submit">Unmatch</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No sales matched to this lot yet. Record a sale and pick this lot, or match it from the P&amp;L page.</p>
+  {% endif %}
+</section>
+{% endblock %}

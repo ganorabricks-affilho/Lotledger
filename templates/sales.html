@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Sales · Lotledger{% endblock %}
+{% block content %}
+<h1>Sales</h1>
+<p class="lede">Record marketplace orders, then match them to the lot the parts came from.</p>
+
+<section class="grid-2">
+  <form class="panel form" method="post">
+    <h2>New sale</h2>
+    <div class="row">
+      <label>Sold on
+        <input type="date" name="sold_on" required>
+      </label>
+      <label>Platform
+        <select name="platform">
+          {% for platform in platforms %}
+          <option>{{ platform }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label>Order / invoice
+      <input name="order_ref" placeholder="BrickLink order #">
+    </label>
+    <label>What sold
+      <input name="description" placeholder="e.g. 10x 3001 bricks, mixed colors">
+    </label>
+    <div class="row">
+      <label>Gross (what buyer paid you)
+        <input name="gross" inputmode="decimal" placeholder="24.50" required>
+      </label>
+      <label>Fees
+        <input name="fees" inputmode="decimal" placeholder="2.10">
+      </label>
+    </div>
+    <label>Match to lot
+      <select name="lot_id">
+        <option value="">Unmatched — assign later</option>
+        {% for lot in ready_lots %}
+        <option value="{{ lot.id }}">{{ lot.title }} ({{ money(lot.profit_cents) }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Save sale</button>
+  </form>
+
+  <div class="panel">
+    <h2>All sales</h2>
+    {% if sales %}
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Sale</th>
+          <th>Net</th>
+          <th>Lot</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sale in sales %}
+        <tr>
+          <td>{{ sale.sold_on }}</td>
+          <td>
+            {{ sale.platform }}
+            <small>{{ sale.description or sale.order_ref or '—' }}</small>
+          </td>
+          <td>{{ money(sale.gross_cents - sale.fees_cents) }}</td>
+          <td>
+            <form class="inline" method="post" action="{{ url_for('sale_match', sale_id=sale.id) }}">
+              <select name="lot_id" onchange="this.form.submit()">
+                <option value="">Unmatched</option>
+                {% for lot in lots if lot.has_details or sale.lot_id == lot.id %}
+                <option value="{{ lot.id }}" {% if sale.lot_id == lot.id %}selected{% endif %}>{{ lot.title }}{% if not lot.has_details %} (pending){% endif %}</option>
+                {% endfor %}
+              </select>
+            </form>
+            <form class="inline" method="post" action="{{ url_for('sale_delete', sale_id=sale.id) }}" onsubmit="return confirm('Delete this sale?')">
+              <button class="linkish" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No sales yet.</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
