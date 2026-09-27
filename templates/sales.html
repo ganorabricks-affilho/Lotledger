@@ -50,12 +50,24 @@
           <th>Lots</th>
           <th>Total</th>
           <th>Shipping</th>
+          <th>Packing</th>
           <th>Net gain</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
-        {% for order in orders %}
+        {% for group in month_groups %}
+        <tr class="month-group">
+          <td colspan="4">{{ group.label }}<small>{{ group.orders|length }} order{{ 's' if group.orders|length != 1 else '' }}</small></td>
+          <td>{{ group.qty }}</td>
+          <td>{{ group.lots }}</td>
+          <td>{{ money(group.items_cents) }}</td>
+          <td>{{ money(group.shipping_cents) }}</td>
+          <td>{{ money(group.packing_cents) }}</td>
+          <td class="{{ 'up' if group.net_cents >= 0 else 'down' }}">{{ money(group.net_cents) }}</td>
+          <td></td>
+        </tr>
+        {% for order in group.orders %}
         <tr>
           <td><a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a></td>
           <td>{{ 'BL' if order.is_bricklink else 'BO' }}</td>
@@ -65,6 +77,7 @@
           <td>{{ order.display_lots }}</td>
           <td>{{ money(order.items_cents) }}</td>
           <td>{{ money(order.shipping_cents) }}</td>
+          <td>{{ money(order.packing_cents) }}</td>
           <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
           <td>
             <form class="inline" method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete order {{ order.order_number }}? You can reimport it later.')">
@@ -72,6 +85,7 @@
             </form>
           </td>
         </tr>
+        {% endfor %}
         {% endfor %}
       </tbody>
     </table>

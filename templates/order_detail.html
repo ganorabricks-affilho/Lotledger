@@ -18,15 +18,15 @@
     <strong>{{ money(order.items_cents) }}</strong>
     <em>{% if order.is_bricklink %}grand total from BrickLink (incl. tax){% elif order.is_brickowl %}from BrickOwl (includes extras){% else %}from {{ order.platform }}{% endif %}</em>
   </article>
-  <article>
-    <span>Item costs</span>
-    <strong>{{ money3(order.lines_cents) }}</strong>
-    <em>sum of row prices × qty</em>
-  </article>
-  <article>
+  <article class="down">
     <span>Shipping</span>
-    <strong>{{ money(order.shipping_cents) }}</strong>
+    <strong>−{{ money(order.shipping_cents) }}</strong>
     <em>{% if order.is_bricklink %}your shipping cost (buyer shipping is in order total){% else %}added manually{% endif %}</em>
+  </article>
+  <article class="down">
+    <span>Packing materials</span>
+    <strong>−{{ money(order.packing_cents) }}</strong>
+    <em>defaults to $0.50</em>
   </article>
   {% if order.has_tax %}
   <article class="down">
@@ -64,21 +64,26 @@
     <span>Net gain</span>
     <strong>{{ money(order.net_cents) }}</strong>
     {% if order.is_bricklink %}
-    <em>grand total − tax − shipping{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickLink 3% · split across items</em>
+    <em>grand total − tax − shipping − packing materials{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickLink 3% · split across items</em>
     {% else %}
-    <em>order total − shipping{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickOwl · split across items</em>
+    <em>order total − shipping − packing materials{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickOwl · split across items</em>
     {% endif %}
   </article>
 </div>
 
 <section class="panel">
-  <h2>Shipping</h2>
+  <h2>Shipping and packing</h2>
   <form class="form" method="post" action="{{ url_for('order_costs', order_id=order.id) }}">
-    <label>Shipping
-      <input name="shipping" inputmode="decimal" value="{{ money_input(order.shipping_cents) }}">
-    </label>
+    <div class="row">
+      <label>Shipping
+        <input name="shipping" inputmode="decimal" value="{{ money_input(order.shipping_cents) }}">
+      </label>
+      <label>Packing materials
+        <input name="packing" inputmode="decimal" value="{{ money_input(order.packing_cents) }}">
+      </label>
+    </div>
     <input type="hidden" name="other_costs" value="{{ money_input(order.other_costs_cents) }}">
-    <button type="submit">Save shipping</button>
+    <button type="submit">Save</button>
   </form>
 </section>
 

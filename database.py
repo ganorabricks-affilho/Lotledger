@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS orders (
     order_number TEXT NOT NULL,
     currency TEXT NOT NULL DEFAULT 'USD',
     shipping_cents INTEGER NOT NULL DEFAULT 0,
+    packing_cents INTEGER NOT NULL DEFAULT 50,
     other_costs_cents INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT '',
     payment_method TEXT NOT NULL DEFAULT '',
@@ -121,6 +122,7 @@ def get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    added_packing = False
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         cols = {row[1] for row in conn.execute("PRAGMA table_info(lots)")}
@@ -143,9 +145,12 @@ def init_db() -> None:
             ("header_total_cents", "INTEGER NOT NULL DEFAULT 0"),
             ("tax_cents", "INTEGER NOT NULL DEFAULT 0"),
             ("buyer_shipping_cents", "INTEGER NOT NULL DEFAULT 0"),
+            ("packing_cents", "INTEGER NOT NULL DEFAULT 50"),
         ):
             if name not in order_cols:
                 conn.execute(f"ALTER TABLE orders ADD COLUMN {name} {ddl}")
+                if name == "packing_cents":
+                    added_packing = True
         line_cols = {row[1] for row in conn.execute("PRAGMA table_info(order_lines)")}
         for name in ("image_url", "boid", "owl_lot_id", "bl_lot_id", "personal_note"):
             if name not in line_cols:
@@ -170,6 +175,11 @@ def init_db() -> None:
                 "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 ("order_line_price_scale", "milli"),
             )
+    if added_packing:
+        with get_conn() as conn:
+            order_ids = [row["id"] for row in conn.execute("SELECT id FROM orders")]
+        for order_id in order_ids:
+            persist_line_net_gains(order_id)
 
 
 def parse_money(value: str) -> int:
@@ -622,11 +632,13 @@ def persist_line_net_gains(order_id: int) -> None:
             )
 
 
-def update_order_costs(order_id: int, shipping_cents: int, other_costs_cents: int) -> None:
+def update_order_costs(
+    order_id: int, shipping_cents: int, other_costs_cents: int, packing_cents: int
+) -> None:
     with get_conn() as conn:
         conn.execute(
-            "UPDATE orders SET shipping_cents = ?, other_costs_cents = ? WHERE id = ?",
-            (shipping_cents, other_costs_cents, order_id),
+            "UPDATE orders SET shipping_cents = ?, other_costs_cents = ?, packing_cents = ? WHERE id = ?",
+            (shipping_cents, other_costs_cents, packing_cents, order_id),
         )
     persist_line_net_gains(order_id)
 
@@ -681,6 +693,8 @@ def _enrich_order(row) -> dict:
     lines_cents = order.get("lines_cents") or 0
     items = header_total or lines_cents
     shipping = order.get("shipping_cents") or 0
+    packing = order.get("packing_cents")
+    packing = 50 if packing is None else int(packing)
     other = order.get("other_costs_cents") or 0
     tax = order.get("tax_cents") or 0
     payment = (order.get("payment_method") or "").strip().lower()
@@ -716,6 +730,7 @@ def _enrich_order(row) -> dict:
     order["tax_cents"] = tax
     order["has_tax"] = tax > 0
     order["buyer_shipping_cents"] = order.get("buyer_shipping_cents") or 0
+    order["packing_cents"] = packing
     order["brickfreedom_fee_cents"] = brickfreedom_fee_cents
     order["brickowl_fee_cents"] = brickowl_fee_cents
     order["bricklink_fee_cents"] = bricklink_fee_cents
@@ -730,6 +745,7 @@ def _enrich_order(row) -> dict:
         items
         - tax
         - shipping
+        - packing
         - other
         - fee_cents
         - brickfreedom_fee_cents

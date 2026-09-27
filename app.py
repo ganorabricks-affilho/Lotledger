@@ -1,3 +1,5 @@
+import calendar
+
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 import bricklink
@@ -159,9 +161,53 @@ def lot_delete(lot_id):
     return redirect(url_for("dashboard"))
 
 
+def _orders_by_month(orders):
+    groups = []
+    index = {}
+    for order in orders:
+        sold_on = order.get("sold_on") or ""
+        key = sold_on[:7] if len(sold_on) >= 7 else "unknown"
+        group = index.get(key)
+        if group is None:
+            label = key
+            if len(key) == 7 and key[4] == "-":
+                year, month = key.split("-")
+                try:
+                    label = f"{calendar.month_name[int(month)]} {year}"
+                except (ValueError, IndexError):
+                    label = key
+            group = {
+                "key": key,
+                "label": label,
+                "orders": [],
+                "qty": 0,
+                "lots": 0,
+                "items_cents": 0,
+                "shipping_cents": 0,
+                "packing_cents": 0,
+                "net_cents": 0,
+            }
+            index[key] = group
+            groups.append(group)
+        group["orders"].append(order)
+        group["qty"] += int(order.get("display_qty") or 0)
+        group["lots"] += int(order.get("display_lots") or 0)
+        group["items_cents"] += int(order.get("items_cents") or 0)
+        group["shipping_cents"] += int(order.get("shipping_cents") or 0)
+        group["packing_cents"] += int(order.get("packing_cents") or 0)
+        group["net_cents"] += int(order.get("net_cents") or 0)
+    return groups
+
+
 @app.route("/sales")
 def sales():
-    return render_template("sales.html", orders=db.list_orders(), import_limit=10)
+    orders = db.list_orders()
+    return render_template(
+        "sales.html",
+        orders=orders,
+        month_groups=_orders_by_month(orders),
+        import_limit=10,
+    )
 
 
 @app.route("/sales/brickowl", methods=["POST"])
@@ -234,8 +280,9 @@ def order_costs(order_id):
         order_id,
         db.parse_money(request.form.get("shipping")),
         db.parse_money(request.form.get("other_costs")),
+        db.parse_money(request.form.get("packing")),
     )
-    flash("Shipping saved. Net gain was split across items.")
+    flash("Shipping and packing materials saved. Net gain was split across items.")
     return redirect(url_for("order_detail", order_id=order_id))
 
 

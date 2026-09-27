@@ -122,6 +122,19 @@ td small, td a + small { display: block; }
   white-space: nowrap;
   padding-right: 14px;
 }
+.sales-orders tr.month-group td {
+  background: #fff8ea;
+  border-top: 2px solid var(--ink);
+  font-weight: 700;
+  padding-top: 14px;
+  padding-bottom: 10px;
+}
+.sales-orders tr.month-group small {
+  display: inline;
+  margin-left: 10px;
+  font-weight: 600;
+  color: var(--muted);
+}
 .form label { display: block; margin-bottom: 12px; font-size: 0.92rem; }
 input, select, textarea {
   width: 100%;
