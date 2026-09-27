@@ -112,6 +112,58 @@ def lot_details(lot_id):
     return redirect(url_for("lot_detail", lot_id=lot_id))
 
 
+@app.route("/lots/<int:lot_id>/details/manual", methods=["POST"])
+def lot_details_manual(lot_id):
+    lot = db.get_lot(lot_id)
+    if lot is None:
+        flash("Lot not found.")
+        return redirect(url_for("dashboard"))
+    if lot.get("details_locked"):
+        flash("Listing details are locked. Unlock to add rows.")
+        return redirect(url_for("lot_detail", lot_id=lot_id))
+    item_id = (request.form.get("item_id") or "").strip()
+    try:
+        qty = int(request.form.get("qty") or 0)
+    except ValueError:
+        qty = 0
+    if not item_id or qty <= 0:
+        flash("Manual row needs an item ID and quantity greater than 0.")
+        return redirect(url_for("lot_detail", lot_id=lot_id))
+    try:
+        sale_rate = max(0, int(request.form.get("sale_rate") or 0))
+    except ValueError:
+        sale_rate = 0
+    unit_cents = db.parse_money(request.form.get("price"))
+    if sale_rate > 0:
+        unit_cents = int(round(unit_cents * (100 - sale_rate) / 100.0))
+    item_type = (request.form.get("item_type") or "P").strip() or "P"
+    if item_type not in brickstore.ITEM_TYPES:
+        item_type = "P"
+    condition = (request.form.get("condition") or "U").strip() or "U"
+    if condition not in brickstore.CONDITIONS:
+        condition = "U"
+    item = {
+        "item_id": item_id,
+        "item_name": (request.form.get("item_name") or "").strip(),
+        "item_type": item_type,
+        "color": (request.form.get("color") or "").strip(),
+        "category": (request.form.get("category") or "").strip(),
+        "qty": qty,
+        "price_cents": unit_cents,
+        "sale_rate": sale_rate,
+        "condition": condition,
+        "remarks": (request.form.get("remarks") or "").strip(),
+        "bl_lot_id": (request.form.get("bl_lot_id") or "").strip(),
+        "image_url": (request.form.get("image_url") or "").strip(),
+    }
+    result = db.append_listing(lot_id, "manual", [item])
+    if result["skipped"]:
+        flash("That BrickLink lot ID is already on this lot.")
+    else:
+        flash("Listing row added.")
+    return redirect(url_for("lot_detail", lot_id=lot_id))
+
+
 @app.route("/lots/<int:lot_id>/details/clear", methods=["POST"])
 def lot_details_clear(lot_id):
     lot = db.get_lot(lot_id)
@@ -210,6 +262,18 @@ def sales():
     )
 
 
+@app.route("/sales/match", methods=["POST"])
+def sales_match():
+    result = db.match_sales_to_lots()
+    flash(
+        f"Matched {result['matched']} sale line"
+        f"{'s' if result['matched'] != 1 else ''} to lots"
+        f" · {result['already_matched']} already processed"
+        f" · {result['unmatched_with_id']} with BL lot ID still unmatched."
+    )
+    return redirect(url_for("sales"))
+
+
 @app.route("/sales/brickowl", methods=["POST"])
 def sales_brickowl_import():
     key = db.get_setting("brickowl_api_key")
@@ -282,7 +346,11 @@ def order_costs(order_id):
         db.parse_money(request.form.get("other_costs")),
         db.parse_money(request.form.get("packing")),
     )
-    flash("Shipping and packing materials saved. Net gain was split across items.")
+    order = db.get_order(order_id)
+    flash(
+        "Shipping and packing saved. "
+        f"Line net gains updated in the database (order net {db.money(order['net_cents'])})."
+    )
     return redirect(url_for("order_detail", order_id=order_id))
 
 

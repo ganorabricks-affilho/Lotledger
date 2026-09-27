@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from typing import Optional
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "lotledger.db"
 
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS listing_items (
     remarks TEXT NOT NULL DEFAULT '',
     bl_lot_id TEXT NOT NULL DEFAULT '',
     image_url TEXT NOT NULL DEFAULT '',
+    matched INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (lot_id) REFERENCES lots(id) ON DELETE CASCADE
 );
 
@@ -99,6 +101,7 @@ CREATE TABLE IF NOT EXISTS order_lines (
     personal_note TEXT NOT NULL DEFAULT '',
     net_gain_cents INTEGER NOT NULL DEFAULT 0,
     lot_id INTEGER,
+    matched_at TEXT,
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
     FOREIGN KEY (lot_id) REFERENCES lots(id) ON DELETE SET NULL
 );
@@ -163,9 +166,12 @@ def init_db() -> None:
             ("sale_rate", "INTEGER NOT NULL DEFAULT 0"),
             ("bl_lot_id", "TEXT NOT NULL DEFAULT ''"),
             ("image_url", "TEXT NOT NULL DEFAULT ''"),
+            ("matched", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in listing_cols:
                 conn.execute(f"ALTER TABLE listing_items ADD COLUMN {name} {ddl}")
+        if "matched_at" not in line_cols:
+            conn.execute("ALTER TABLE order_lines ADD COLUMN matched_at TEXT")
         scale = conn.execute(
             "SELECT value FROM settings WHERE key = ?", ("order_line_price_scale",)
         ).fetchone()
@@ -241,11 +247,23 @@ def existing_order_numbers(platform_key: str):
     return {row["order_number"] for row in rows}
 
 
+def live_line_net_gains(order_ids) -> dict:
+    """Net gain per order_line id using the same live math as the order page."""
+    gains = {}
+    for order_id in sorted({int(oid) for oid in order_ids if oid is not None}):
+        order = get_order(order_id)
+        if order is None:
+            continue
+        for line in order["lines"]:
+            gains[int(line["id"])] = int(line.get("net_gain_cents") or 0)
+    return gains
+
+
 def list_lots():
     sql = """
         SELECT
             lots.*,
-            COALESCE((SELECT SUM(qty * price_cents) FROM order_lines WHERE order_lines.lot_id = lots.id), 0) AS revenue_cents,
+            COALESCE((SELECT SUM(net_gain_cents) FROM order_lines WHERE order_lines.lot_id = lots.id), 0) AS revenue_cents,
             0 AS fees_cents,
             COALESCE((SELECT COUNT(*) FROM order_lines WHERE order_lines.lot_id = lots.id), 0) AS sale_count,
             COALESCE((SELECT COUNT(*) FROM listing_items WHERE listing_items.lot_id = lots.id), 0) AS detail_count,
@@ -257,7 +275,21 @@ def list_lots():
     """
     with get_conn() as conn:
         rows = conn.execute(sql).fetchall()
-    return [_enrich_lot(row) for row in rows]
+        matched_rows = conn.execute(
+            "SELECT id, order_id, lot_id FROM order_lines WHERE lot_id IS NOT NULL"
+        ).fetchall()
+    gains = live_line_net_gains(row["order_id"] for row in matched_rows)
+    revenue_by_lot = {}
+    for row in matched_rows:
+        lot_id = row["lot_id"]
+        revenue_by_lot[lot_id] = revenue_by_lot.get(lot_id, 0) + gains.get(row["id"], 0)
+    lots = []
+    for row in rows:
+        data = dict(row)
+        if data["id"] in revenue_by_lot:
+            data["revenue_cents"] = revenue_by_lot[data["id"]]
+        lots.append(_enrich_lot(data))
+    return lots
 
 
 def get_lot(lot_id: int):
@@ -271,7 +303,7 @@ def get_lot(lot_id: int):
             FROM order_lines
             JOIN orders ON orders.id = order_lines.order_id
             WHERE order_lines.lot_id = ?
-            ORDER BY orders.sold_on DESC, order_lines.id DESC
+            ORDER BY orders.sold_on DESC, orders.id DESC, order_lines.id DESC
             """,
             (lot_id,),
         ).fetchall()
@@ -279,13 +311,46 @@ def get_lot(lot_id: int):
             """
             SELECT * FROM listing_items
             WHERE lot_id = ?
-            ORDER BY item_type, item_id, color, id
+            ORDER BY matched DESC, item_type, item_id, color, id
             """,
             (lot_id,),
         ).fetchall()
-    matched = [dict(row) for row in matched]
-    revenue = sum(line["qty"] * line["price_cents"] for line in matched)
+    matched = [dict(line) for line in matched]
+    gains = live_line_net_gains(line["order_id"] for line in matched)
+    net_by_bl = {}
+    order_by_bl = {}
+    for line in matched:
+        line["net_gain_cents"] = gains.get(line["id"], int(line.get("net_gain_cents") or 0))
+        bl_lot_id = line.get("bl_lot_id") or ""
+        if bl_lot_id:
+            net_by_bl[bl_lot_id] = net_by_bl.get(bl_lot_id, 0) + line["net_gain_cents"]
+            order_by_bl[bl_lot_id] = line["order_id"]
+    revenue = sum(int(line.get("net_gain_cents") or 0) for line in matched)
+    matched_groups = []
+    group_index = {}
+    for line in matched:
+        key = (line.get("sold_on") or "", line.get("order_id"))
+        group = group_index.get(key)
+        if group is None:
+            group = {
+                "sold_on": line.get("sold_on") or "",
+                "order_id": line.get("order_id"),
+                "platform": line.get("platform") or "",
+                "order_number": line.get("order_number") or "",
+                "lines": [],
+                "qty": 0,
+                "net_cents": 0,
+            }
+            group_index[key] = group
+            matched_groups.append(group)
+        group["lines"].append(line)
+        group["qty"] += int(line.get("qty") or 0)
+        group["net_cents"] += int(line.get("net_gain_cents") or 0)
     items = [dict(item) for item in items]
+    for item in items:
+        bl_lot_id = item.get("bl_lot_id") or ""
+        item["sale_net_gain_cents"] = net_by_bl.get(bl_lot_id, 0)
+        item["matched_order_id"] = order_by_bl.get(bl_lot_id)
     lot = _enrich_lot(
         {
             **dict(row),
@@ -298,6 +363,7 @@ def get_lot(lot_id: int):
         }
     )
     lot["matched_lines"] = matched
+    lot["matched_groups"] = matched_groups
     lot["listed_items"] = items
     lot["details_locked"] = bool(lot.get("details_locked"))
     return lot
@@ -467,9 +533,75 @@ def delete_listing_item(lot_id: int, item_id: int) -> bool:
 def delete_lot(lot_id: int) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM listing_items WHERE lot_id = ?", (lot_id,))
-        conn.execute("UPDATE order_lines SET lot_id = NULL WHERE lot_id = ?", (lot_id,))
+        conn.execute(
+            "UPDATE order_lines SET lot_id = NULL, matched_at = NULL WHERE lot_id = ?",
+            (lot_id,),
+        )
         conn.execute("UPDATE sales SET lot_id = NULL WHERE lot_id = ?", (lot_id,))
         conn.execute("DELETE FROM lots WHERE id = ?", (lot_id,))
+
+
+def match_sales_to_lots() -> dict:
+    """Match unprocessed order lines to listing items by bl_lot_id.
+
+    Already-matched lines (lot_id set) are skipped. On match, sets the sale
+    line's lot_id, records matched_at, and marks the listing row as matched.
+    Lot P&L uses the sale line's live net gain.
+    """
+    refresh_all_line_net_gains()
+    with get_conn() as conn:
+        already = conn.execute(
+            "SELECT COUNT(*) AS n FROM order_lines WHERE lot_id IS NOT NULL"
+        ).fetchone()["n"]
+        candidates = conn.execute(
+            """
+            SELECT
+                ol.id AS line_id,
+                ol.bl_lot_id,
+                li.id AS listing_id,
+                li.lot_id
+            FROM order_lines ol
+            JOIN listing_items li
+              ON li.bl_lot_id = ol.bl_lot_id
+             AND ol.bl_lot_id != ''
+            WHERE ol.lot_id IS NULL
+              AND li.id = (
+                  SELECT MIN(li2.id) FROM listing_items li2
+                  WHERE li2.bl_lot_id = ol.bl_lot_id
+              )
+            ORDER BY ol.id
+            """
+        ).fetchall()
+        matched = 0
+        listing_ids = set()
+        for row in candidates:
+            conn.execute(
+                """
+                UPDATE order_lines
+                SET lot_id = ?, matched_at = datetime('now')
+                WHERE id = ? AND lot_id IS NULL
+                """,
+                (row["lot_id"], row["line_id"]),
+            )
+            if conn.execute("SELECT changes()").fetchone()[0]:
+                matched += 1
+                listing_ids.add(row["listing_id"])
+        if listing_ids:
+            conn.executemany(
+                "UPDATE listing_items SET matched = 1 WHERE id = ?",
+                [(listing_id,) for listing_id in listing_ids],
+            )
+        still_open = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM order_lines
+            WHERE lot_id IS NULL AND bl_lot_id != ''
+            """
+        ).fetchone()["n"]
+    return {
+        "matched": matched,
+        "already_matched": already,
+        "unmatched_with_id": still_open,
+    }
 
 
 def import_orders(parsed_orders: list) -> dict:
@@ -620,16 +752,24 @@ def allocate_net_gain(lines: list, net_cents: int) -> list:
     return lines
 
 
-def persist_line_net_gains(order_id: int) -> None:
+def persist_line_net_gains(order_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
     order = get_order(order_id)
     if order is None:
         return
-    with get_conn() as conn:
+    owns_conn = conn is None
+    if owns_conn:
+        conn = get_conn()
+    try:
         for line in order["lines"]:
             conn.execute(
                 "UPDATE order_lines SET net_gain_cents = ? WHERE id = ?",
                 (line.get("net_gain_cents") or 0, line["id"]),
             )
+        if owns_conn:
+            conn.commit()
+    finally:
+        if owns_conn:
+            conn.close()
 
 
 def update_order_costs(
@@ -640,7 +780,18 @@ def update_order_costs(
             "UPDATE orders SET shipping_cents = ?, other_costs_cents = ?, packing_cents = ? WHERE id = ?",
             (shipping_cents, other_costs_cents, packing_cents, order_id),
         )
+    # Recompute and store line net gains after costs are committed so get_order
+    # sees the new shipping/packing when allocating shares.
     persist_line_net_gains(order_id)
+
+
+def refresh_all_line_net_gains() -> int:
+    """Rewrite every order line's stored net_gain_cents from current order math."""
+    with get_conn() as conn:
+        order_ids = [row["id"] for row in conn.execute("SELECT id FROM orders")]
+    for order_id in order_ids:
+        persist_line_net_gains(order_id)
+    return len(order_ids)
 
 
 def delete_order(order_id: int) -> None:

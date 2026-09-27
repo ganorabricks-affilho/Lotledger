@@ -33,6 +33,13 @@
       <p class="empty">Add BrickLink OAuth credentials in <a href="{{ url_for('settings') }}">Settings</a> first.</p>
       {% endif %}
     </form>
+
+    <form class="panel form" id="sales-match" method="post" action="{{ url_for('sales_match') }}">
+      <h2>Match to lots</h2>
+      <p class="lede">Link sale rows to purchased lots by BrickLink lot ID. Already matched sales are skipped.</p>
+      <button type="submit" id="sales-match-btn">Match sales to lots</button>
+      <p class="import-status" id="sales-match-status" hidden>Matching sales to lots… this can take a bit.</p>
+    </form>
   </div>
 
   <div class="panel sales-orders">
@@ -96,19 +103,20 @@
   </div>
 </section>
 <script>
-  function wireImport(formId, btnId, statusId) {
+  function wireBusy(formId, btnId, statusId, busyLabel) {
     const form = document.getElementById(formId);
     if (!form) return;
     const btn = document.getElementById(btnId);
     const status = document.getElementById(statusId);
     form.addEventListener("submit", () => {
       btn.disabled = true;
-      btn.textContent = "Importing…";
+      btn.textContent = busyLabel;
       status.hidden = false;
       document.body.classList.add("is-busy");
     });
   }
-  wireImport("brickowl-import", "brickowl-import-btn", "brickowl-import-status");
-  wireImport("bricklink-import", "bricklink-import-btn", "bricklink-import-status");
+  wireBusy("brickowl-import", "brickowl-import-btn", "brickowl-import-status", "Importing…");
+  wireBusy("bricklink-import", "bricklink-import-btn", "bricklink-import-status", "Importing…");
+  wireBusy("sales-match", "sales-match-btn", "sales-match-status", "Matching…");
 </script>
 {% endblock %}

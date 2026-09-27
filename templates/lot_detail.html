@@ -22,8 +22,8 @@
 <div class="stats compact">
   <article>
     <span>Total to recover</span>
-    <strong>{{ money(lot.invested_cents) }}</strong>
-    <em>{{ money(lot.cost_cents) }} cost · {{ money(lot.shipping_cents) }} ship · {{ money(lot.tax_cents) }} tax · {{ money(lot.handling_cents) }} handling</em>
+    <strong>{{ money(lot.cost_cents + lot.shipping_cents + lot.tax_cents + lot.handling_cents) }}</strong>
+    <em>{{ money(lot.cost_cents) }} + {{ money(lot.shipping_cents) }} ship + {{ money(lot.tax_cents) }} tax + {{ money(lot.handling_cents) }} handling</em>
   </article>
   <article>
     <span>Net from sales</span>
@@ -45,7 +45,7 @@
   <div class="panel-head">
     <h2>Listing details{% if lot.details_locked %} · locked{% endif %}</h2>
     {% if lot.has_details %}
-    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} pcs · listed {{ money(lot.listed_value_cents) }}</span>
+    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} pcs · listed value {{ money(lot.listed_value_cents) }}</span>
     {% endif %}
   </div>
   {% if lot.has_details or lot.details_locked %}
@@ -76,6 +76,69 @@
   {% else %}
   <p class="empty">Add BrickLink OAuth credentials in <a href="{{ url_for('settings') }}">Settings</a> to import listing details.</p>
   {% endif %}
+
+  <form class="form" method="post" action="{{ url_for('lot_details_manual', lot_id=lot.id) }}" style="margin-top: 18px;">
+    <h3>Add row manually</h3>
+    <p class="lede">Enter every listing field. Sale % reduces unit price the same way BrickLink import does.</p>
+    <div class="row">
+      <label>Item ID
+        <input name="item_id" required placeholder="970c00">
+      </label>
+      <label>Name
+        <input name="item_name" placeholder="Hips and Legs Plain">
+      </label>
+    </div>
+    <div class="row">
+      <label>Type
+        <select name="item_type">
+          {% for key, label in item_types.items() %}
+          <option value="{{ key }}" {% if key == 'P' %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Condition
+        <select name="condition">
+          {% for key, label in conditions.items() %}
+          <option value="{{ key }}" {% if key == 'U' %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <label>Color
+        <input name="color" placeholder="Black">
+      </label>
+      <label>Category
+        <input name="category" placeholder="Minifigure">
+      </label>
+    </div>
+    <div class="row">
+      <label>Qty
+        <input type="number" name="qty" min="1" value="1" required>
+      </label>
+      <label>Unit price
+        <input name="price" inputmode="decimal" placeholder="0.25">
+      </label>
+    </div>
+    <div class="row">
+      <label>Sale %
+        <input type="number" name="sale_rate" min="0" max="100" value="0">
+      </label>
+      <label>BrickLink lot ID
+        <input name="bl_lot_id" placeholder="562269383">
+      </label>
+    </div>
+    <div class="row">
+      <label>Remarks
+        <input name="remarks" placeholder="AJ-03-01">
+      </label>
+      <label>Image URL
+        <input name="image_url" placeholder="https://…">
+      </label>
+    </div>
+    <button type="submit">Add listing row</button>
+  </form>
+
   {% if lot.has_details %}
   <form method="post" action="{{ url_for('lot_details_clear', lot_id=lot.id) }}" style="margin-top: 12px;" onsubmit="return confirm('Delete all listing rows for this lot?')">
     <button class="danger" type="submit">Delete all listing rows</button>
@@ -88,19 +151,22 @@
     <table>
       <thead>
         <tr>
+          <th class="match-col" title="Matched to a sale"></th>
           <th></th>
-          <th>Lot ID</th>
+          <th>Item ID</th>
+          <th>BL lot ID</th>
           <th>Name</th>
           <th>Qty</th>
-          <th>List price</th>
-          <th>Sale</th>
-          <th>Remarks</th>
+          <th>Unit price</th>
+          <th>Line total</th>
+          <th>Net gain</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
         {% for item in lot.listed_items %}
-        <tr>
+        <tr class="{{ 'is-matched' if item.matched else '' }}">
+          <td class="match-col">{% if item.matched %}<span class="match-flag" title="Matched to a sale"></span>{% endif %}</td>
           <td>
             {% if item.image_url %}
             <img class="thumb" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
@@ -108,17 +174,28 @@
             —
             {% endif %}
           </td>
+          <td>{{ item.item_id or '—' }}</td>
           <td>{{ item.bl_lot_id or '—' }}</td>
-          <td>{{ item.item_name or item.item_id }}<small>{{ item.item_id }} · {{ item.item_type }} · {{ item.condition }}</small></td>
+          <td>{{ item.item_name or item.item_id }}<small>{{ item.item_type }} · {{ item.condition }}{% if item.color %} · {{ item.color }}{% endif %}</small></td>
           <td>{{ item.qty }}</td>
           <td>{{ money(item.price_cents) }}</td>
-          <td>{% if item.sale_rate %}{{ item.sale_rate }}%{% else %}—{% endif %}</td>
-          <td>{{ item.remarks or '—' }}</td>
+          <td>{{ money(item.qty * item.price_cents) }}</td>
+          <td>
+            {% if item.matched and item.matched_order_id %}
+            <a class="{{ 'up' if item.sale_net_gain_cents >= 0 else 'down' }}" href="{{ url_for('order_detail', order_id=item.matched_order_id) }}">{{ money(item.sale_net_gain_cents) }}</a>
+            {% elif item.matched %}
+            <span class="{{ 'up' if item.sale_net_gain_cents >= 0 else 'down' }}">{{ money(item.sale_net_gain_cents) }}</span>
+            {% else %}
+            —
+            {% endif %}
+          </td>
           <td>
             <details class="ids">
               <summary>⋯</summary>
               <p>Color {{ item.color or '—' }}</p>
               <p>Category {{ item.category or '—' }}</p>
+              {% if item.remarks %}<p>Remarks {{ item.remarks }}</p>{% endif %}
+              {% if item.sale_rate %}<p>Sale {{ item.sale_rate }}%</p>{% endif %}
             </details>
             {% if not lot.details_locked %}
             <form class="inline" method="post" action="{{ url_for('lot_details_item_delete', lot_id=lot.id, item_id=item.id) }}" onsubmit="return confirm('Delete this listing row?')">
@@ -129,6 +206,14 @@
         </tr>
         {% endfor %}
       </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="7">Listed value (qty × unit price)</td>
+          <td>{{ money(lot.listed_value_cents) }}</td>
+          <td class="{{ 'up' if lot.net_cents >= 0 else 'down' }}">{{ money(lot.net_cents) }}</td>
+          <td></td>
+        </tr>
+      </tfoot>
     </table>
   </div>
   {% endif %}
@@ -139,26 +224,34 @@
     <h2>Matched sales</h2>
     <a href="{{ url_for('sales') }}">Sales</a>
   </div>
-  {% if lot.matched_lines %}
-  <table>
+  {% if lot.matched_groups %}
+  <table class="matched-sales">
     <thead>
       <tr>
-        <th>Date</th>
-        <th>Order</th>
         <th>Item</th>
         <th>Qty</th>
-        <th>Total</th>
+        <th>Net gain</th>
       </tr>
     </thead>
     <tbody>
-      {% for line in lot.matched_lines %}
+      {% for group in lot.matched_groups %}
+      <tr class="order-group">
+        <td>
+          {{ group.sold_on }}
+          ·
+          <a href="{{ url_for('order_detail', order_id=group.order_id) }}">{{ group.platform }} #{{ group.order_number }}</a>
+          <small>{{ group.lines|length }} line{{ 's' if group.lines|length != 1 else '' }}</small>
+        </td>
+        <td>{{ group.qty }}</td>
+        <td class="{{ 'up' if group.net_cents >= 0 else 'down' }}">{{ money(group.net_cents) }}</td>
+      </tr>
+      {% for line in group.lines %}
       <tr>
-        <td>{{ line.sold_on }}</td>
-        <td>{{ line.platform }} #{{ line.order_number }}</td>
         <td>{{ line.item_id }}<small>{{ line.item_name }}</small></td>
         <td>{{ line.qty }}</td>
-        <td>{{ money3(line.qty * line.price_cents) }}</td>
+        <td class="{{ 'up' if line.net_gain_cents >= 0 else 'down' }}">{{ money(line.net_gain_cents) }}</td>
       </tr>
+      {% endfor %}
       {% endfor %}
     </tbody>
   </table>

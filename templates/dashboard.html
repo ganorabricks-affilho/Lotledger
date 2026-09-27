@@ -90,7 +90,7 @@
     <h2>Unmatched sold rows</h2>
     <a href="{{ url_for('sales') }}">Open sales</a>
   </div>
-  <p class="empty">{{ summary.unmatched_count }} sold rows still need a purchased lot ({{ money(summary.unmatched_net_cents) }} net gain). Matching comes next.</p>
+  <p class="empty">{{ summary.unmatched_count }} sold rows still need a purchased lot ({{ money(summary.unmatched_net_cents) }} net gain). Use Match sales to lots on the Sales page.</p>
 </section>
 {% endif %}
 {% endblock %}
