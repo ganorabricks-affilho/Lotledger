@@ -1,3 +1,4 @@
+import calendar
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -836,6 +837,517 @@ def summary():
         "pending_count": sum(1 for lot in lots if not lot["has_details"]),
         "ready_lots": [lot for lot in lots if lot["has_details"]],
     }
+
+
+def _sold_period(order) -> tuple:
+    sold = order.get("sold_on") or ""
+    if len(sold) < 7 or sold[4] != "-":
+        return None, None
+    try:
+        year = int(sold[:4])
+        month = int(sold[5:7])
+    except ValueError:
+        return None, None
+    if not 1 <= month <= 12:
+        return None, None
+    return year, month
+
+
+def _order_bits(order) -> dict:
+    sales = int(order.get("items_cents") or 0) - int(order.get("tax_cents") or 0)
+    shipping = int(order.get("shipping_cents") or 0)
+    packing = int(order.get("packing_cents") or 0)
+    other = int(order.get("other_costs_cents") or 0)
+    payment = int(order.get("payment_fee_cents") or 0)
+    freedom = int(order.get("brickfreedom_fee_cents") or 0)
+    blink = int(order.get("bricklink_fee_cents") or 0)
+    bowl = int(order.get("brickowl_fee_cents") or 0)
+    fees = payment + freedom + blink + bowl
+    return {
+        "sales": sales,
+        "tax": int(order.get("tax_cents") or 0),
+        "gross": int(order.get("items_cents") or 0),
+        "shipping": shipping,
+        "packing": packing,
+        "other": other,
+        "payment": payment,
+        "freedom": freedom,
+        "blink": blink,
+        "bowl": bowl,
+        "fees": fees,
+        "costs": shipping + packing + other + fees,
+        "net": int(order.get("net_cents") or 0),
+        "buyer_shipping": int(order.get("buyer_shipping_cents") or 0),
+    }
+
+
+def _sum_bits(pairs) -> dict:
+    keys = (
+        "sales",
+        "tax",
+        "gross",
+        "shipping",
+        "packing",
+        "other",
+        "payment",
+        "freedom",
+        "blink",
+        "bowl",
+        "fees",
+        "costs",
+        "net",
+        "buyer_shipping",
+    )
+    total = {key: 0 for key in keys}
+    for _, bits in pairs:
+        for key in keys:
+            total[key] += bits[key]
+    total["order_count"] = len(pairs)
+    return total
+
+
+def _share(part: int, whole: int):
+    if whole <= 0:
+        return None
+    return int(round(part * 100 / whole))
+
+
+def _public_totals(total: dict) -> dict:
+    count = total["order_count"]
+    return {
+        "order_count": count,
+        "sales_cents": total["sales"],
+        "tax_cents": total["tax"],
+        "gross_cents": total["gross"],
+        "shipping_cents": total["shipping"],
+        "packing_cents": total["packing"],
+        "other_cents": total["other"],
+        "payment_cents": total["payment"],
+        "freedom_cents": total["freedom"],
+        "blink_cents": total["blink"],
+        "bowl_cents": total["bowl"],
+        "fee_cents": total["fees"],
+        "cost_cents": total["costs"],
+        "controllable_cents": total["shipping"] + total["packing"] + total["other"],
+        "net_cents": total["net"],
+        "buyer_shipping_cents": total["buyer_shipping"],
+        "margin": _share(total["net"], total["sales"]),
+        "ship_share": _share(total["shipping"], total["sales"]),
+        "per_order_cents": int(round(total["net"] / count)) if count else 0,
+    }
+
+
+def _labeled_totals(label: str, pairs, **extra) -> dict:
+    row = _public_totals(_sum_bits(pairs))
+    row["label"] = label
+    row["unshipped_count"] = sum(1 for _, bits in pairs if bits["shipping"] <= 0 and bits["sales"] > 0)
+    row.update(extra)
+    return row
+
+
+def _order_row(order, bits) -> dict:
+    share = _share(bits["shipping"], bits["sales"])
+    return {
+        "id": order["id"],
+        "order_number": order.get("order_number") or "",
+        "platform": "BL" if order.get("is_bricklink") else "BO",
+        "sold_on": order.get("sold_on") or "",
+        "sales_cents": bits["sales"],
+        "shipping_cents": bits["shipping"],
+        "packing_cents": bits["packing"],
+        "fee_cents": bits["fees"],
+        "net_cents": bits["net"],
+        "ship_share": share,
+        "thin": share is not None and share >= 25,
+    }
+
+
+def _lever(kicker: str, title: str, body: str, impact: int, loss: bool = False, impact_label: str = "") -> dict:
+    return {
+        "kicker": kicker,
+        "title": title,
+        "body": body,
+        "impact_cents": impact,
+        "impact_label": impact_label,
+        "tone": "down" if loss else "up",
+    }
+
+
+def _profit_levers(pairs) -> list:
+    """Dollar changes that would move profit: shipping, packing, and checkout fees."""
+    if not pairs:
+        return []
+    total = _sum_bits(pairs)
+    count = total["order_count"]
+    levers = []
+
+    heavy = [
+        (order, bits)
+        for order, bits in pairs
+        if (_share(bits["shipping"], bits["sales"]) or 0) >= 25
+    ]
+    excess = sum(max(0, bits["shipping"] - int(round(bits["sales"] * 0.15))) for _, bits in heavy)
+    if heavy and excess >= 100:
+        heavy_sales = sum(bits["sales"] for _, bits in heavy)
+        heavy_ship = sum(bits["shipping"] for _, bits in heavy)
+        heavy_net = sum(bits["net"] for _, bits in heavy)
+        share = _share(heavy_ship, heavy_sales)
+        share_bit = f"{share}% of those sales" if share is not None else "those sales"
+        noun = "order" if len(heavy) == 1 else "orders"
+        ships = sorted(bits["shipping"] for _, bits in heavy)
+        median = ships[len(ships) // 2]
+        close = sum(1 for value in ships if abs(value - median) <= 100)
+        flat_bit = ""
+        if close >= max(3, (len(ships) * 2) // 3):
+            flat_bit = f" Most labels are about {money(median)}."
+        levers.append(
+            _lever(
+                "Shipping",
+                f"{len(heavy)} {noun} where shipping takes a quarter or more",
+                (
+                    f"Shipping on them was {money(heavy_ship)} ({share_bit}), "
+                    f"against {money(heavy_sales)} in sales and {money(heavy_net)} net."
+                    f"{flat_bit} "
+                    f"A cheaper label, or a higher total before you ship, is what moves this."
+                ),
+                excess,
+                impact_label=f"About {money(excess)} if shipping were 15% of those sales",
+            )
+        )
+
+    subsidized = [
+        (order, bits)
+        for order, bits in pairs
+        if order.get("is_bricklink") and bits["shipping"] > bits["buyer_shipping"]
+    ]
+    gap = sum(bits["shipping"] - bits["buyer_shipping"] for _, bits in subsidized)
+    if gap >= 100:
+        buyer = sum(bits["buyer_shipping"] for _, bits in subsidized)
+        seller = sum(bits["shipping"] for _, bits in subsidized)
+        noun = "order" if len(subsidized) == 1 else "orders"
+        levers.append(
+            _lever(
+                "Shipping price",
+                f"BrickLink carrier cost more than the buyer paid on {len(subsidized)} {noun}",
+                (
+                    f"Buyers paid {money(buyer)} for shipping and the carrier cost {money(seller)}. "
+                    f"Charging shipping closer to the carrier cost closes that gap."
+                ),
+                gap,
+                impact_label=f"About {money(gap)} if the buyer covered the carrier",
+            )
+        )
+
+    filled = {}
+    for order, bits in pairs:
+        if bits["shipping"] <= 0 or bits["sales"] <= 0:
+            continue
+        filled.setdefault(order.get("platform") or "Other", []).append((order, bits))
+    eligible = [
+        _labeled_totals(name, group)
+        for name, group in filled.items()
+        if len(group) >= 3
+    ]
+    eligible = [row for row in eligible if row["ship_share"] is not None]
+    if len(eligible) >= 2:
+        low = min(eligible, key=lambda row: row["ship_share"])
+        high = max(eligible, key=lambda row: row["ship_share"])
+        if high["label"] != low["label"] and high["ship_share"] - low["ship_share"] >= 5:
+            target = int(round(high["sales_cents"] * low["ship_share"] / 100))
+            impact = high["shipping_cents"] - target
+            if impact >= 100:
+                levers.append(
+                    _lever(
+                        "Shipping",
+                        f"{high['label']} shipping is higher than {low['label']}",
+                        (
+                            f"On orders with a carrier cost saved, {high['label']} shipping is "
+                            f"{high['ship_share']}% of sales ({money(high['shipping_cents'])}) "
+                            f"and {low['label']} is {low['ship_share']}%."
+                        ),
+                        impact,
+                        impact_label=f"About {money(impact)} if {high['label']} shipped at the {low['label']} rate",
+                    )
+                )
+
+    pack_save = sum(max(0, bits["packing"] - 25) for _, bits in pairs)
+    if pack_save >= 100:
+        avg_pack = total["packing"] // count if count else 0
+        defaults = sum(1 for _, bits in pairs if bits["packing"] == 50)
+        default_bit = ""
+        if defaults >= max(3, (count + 1) // 2):
+            default_bit = f" {defaults} of {count} orders still use the $0.50 default."
+        levers.append(
+            _lever(
+                "Packing",
+                "Packing materials",
+                (
+                    f"Packing is {money(total['packing'])} ({money(avg_pack)} an order)."
+                    f"{default_bit} "
+                    f"At $0.25 of materials an order, the difference is the gain."
+                ),
+                pack_save,
+                impact_label=f"About {money(pack_save)} if packing were $0.25 an order",
+            )
+        )
+
+    paypal = [(order, bits) for order, bits in pairs if "paypal" in (order.get("payment_method") or "").lower()]
+    if paypal:
+        actual = sum(bits["payment"] for _, bits in paypal)
+        alternate = sum(int(round(int(order.get("items_cents") or 0) * 0.029)) + 30 for order, _ in paypal)
+        delta = actual - alternate
+        if delta >= 100:
+            noun = "order" if len(paypal) == 1 else "orders"
+            levers.append(
+                _lever(
+                    "Checkout",
+                    "PayPal fees versus Stripe",
+                    (
+                        f"{len(paypal)} PayPal {noun} paid {money(actual)} in payment fees. "
+                        f"Stripe's rate on those same order totals would have been {money(alternate)}."
+                    ),
+                    delta,
+                    impact_label=f"About {money(delta)} if those orders used Stripe's rate",
+                )
+            )
+
+    losses = [(order, bits) for order, bits in pairs if bits["net"] < 0]
+    drag = -sum(bits["net"] for _, bits in losses)
+    if losses and drag >= 100:
+        noun = "order" if len(losses) == 1 else "orders"
+        levers.append(
+            _lever(
+                "Below zero",
+                f"{len(losses)} {noun} lost money",
+                (
+                    f"Shipping or the price on "
+                    f"{'that order' if len(losses) == 1 else 'those orders'} "
+                    f"is where this period gave profit back."
+                ),
+                drag,
+                loss=True,
+            )
+        )
+
+    levers.sort(key=lambda row: row["impact_cents"], reverse=True)
+    return levers
+
+
+def _shipping_gaps(pairs, elsewhere_has_shipping: bool = False) -> list:
+    """Orders with sales but no carrier cost, when shipping is tracked somewhere."""
+    if not pairs:
+        return []
+    missing = [(order, bits) for order, bits in pairs if bits["shipping"] <= 0 and bits["sales"] > 0]
+    if not missing:
+        return []
+    has_some = any(bits["shipping"] > 0 for _, bits in pairs)
+    if not has_some and not elsewhere_has_shipping:
+        return []
+    counts = {}
+    months = set()
+    for order, _bits in missing:
+        name = order.get("platform") or "Other"
+        counts[name] = counts.get(name, 0) + 1
+        sold_year, sold_month = _sold_period(order)
+        if sold_year:
+            months.add((sold_year, sold_month))
+    parts = [f"{n} {name}" for name, n in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
+    if len(parts) == 1:
+        mix = parts[0]
+    elif len(parts) == 2:
+        mix = f"{parts[0]} and {parts[1]}"
+    else:
+        mix = ", ".join(parts[:-1]) + f", and {parts[-1]}"
+    buyer = sum(bits["buyer_shipping"] for _, bits in missing)
+    buyer_bit = f" Buyers paid {money(buyer)} in shipping on these orders." if buyer else ""
+    month_all_missing = True
+    for order, bits in pairs:
+        sold_year, sold_month = _sold_period(order)
+        if (sold_year, sold_month) in months and bits["shipping"] > 0:
+            month_all_missing = False
+            break
+    if len(months) == 1 and month_all_missing:
+        sold_year, sold_month = next(iter(months))
+        title = f"{calendar.month_name[sold_month]} shipping is not saved"
+    else:
+        noun = "order" if len(missing) == 1 else "orders"
+        title = f"{len(missing)} {noun} have $0 shipping"
+    noun = "order" if len(missing) == 1 else "orders"
+    return [
+        {
+            "kicker": "Shipping not saved",
+            "title": title,
+            "body": (
+                f"{len(missing)} {noun} ({mix}) have no carrier cost saved.{buyer_bit} "
+                f"Profit on them does not include a label yet. Enter shipping on the order and this page updates."
+            ),
+        }
+    ]
+
+
+def sales_profit_report(year: Optional[int] = None, month: Optional[int] = None, all_years: bool = False) -> dict:
+    """Order profit for a year or month.
+
+    Sales are the order total after tax. Profit subtracts shipping, packing,
+    other costs, and payment, BrickFreedom, BrickLink, and BrickOwl fees.
+    Lot purchase cost is not included.
+    """
+    orders = list_orders()
+    dated = []
+    years = []
+    seen_years = set()
+    for order in orders:
+        sold_year, sold_month = _sold_period(order)
+        if sold_year is None:
+            continue
+        dated.append((order, _order_bits(order), sold_year, sold_month))
+        if sold_year not in seen_years:
+            seen_years.add(sold_year)
+            years.append(sold_year)
+    years.sort(reverse=True)
+
+    if all_years:
+        year = None
+        month = None
+    elif year is None and years:
+        year = years[0]
+    if year is None:
+        month = None
+    elif month is not None and not 1 <= month <= 12:
+        month = None
+
+    selected = [
+        (order, bits)
+        for order, bits, sold_year, sold_month in dated
+        if (year is None or sold_year == year) and (month is None or sold_month == month)
+    ]
+    scope = "all" if year is None else "month" if month else "year"
+    if year is None:
+        period_label = "All years"
+    elif month:
+        period_label = f"{calendar.month_name[month]} {year}"
+    else:
+        period_label = str(year)
+
+    month_choices = []
+    if year is not None:
+        counts = {}
+        for _, _, sold_year, sold_month in dated:
+            if sold_year == year:
+                counts[sold_month] = counts.get(sold_month, 0) + 1
+        month_choices = [
+            {"month": sold_month, "label": calendar.month_name[sold_month], "order_count": counts[sold_month]}
+            for sold_month in sorted(counts)
+        ]
+
+    buckets = []
+    if scope == "year":
+        by_month = {}
+        for order, bits, sold_year, sold_month in dated:
+            if sold_year == year:
+                by_month.setdefault(sold_month, []).append((order, bits))
+        for sold_month in sorted(by_month):
+            buckets.append(
+                _labeled_totals(
+                    calendar.month_name[sold_month],
+                    by_month[sold_month],
+                    year=year,
+                    month=sold_month,
+                )
+            )
+    elif scope == "all":
+        by_year = {}
+        for order, bits, sold_year, _sold_month in dated:
+            by_year.setdefault(sold_year, []).append((order, bits))
+        for sold_year in sorted(by_year, reverse=True):
+            buckets.append(
+                _labeled_totals(str(sold_year), by_year[sold_year], year=sold_year, month=None)
+            )
+    peak = max((abs(bucket["net_cents"]) for bucket in buckets), default=0)
+    any_shipping = any(bucket["shipping_cents"] > 0 for bucket in buckets)
+    for bucket in buckets:
+        bucket["bar"] = int(round(abs(bucket["net_cents"]) * 100 / peak)) if peak else 0
+        bucket["shipping_missing"] = bool(
+            any_shipping and bucket["order_count"] and bucket["shipping_cents"] <= 0
+        )
+
+    totals = _sum_bits(selected)
+    report = _public_totals(totals)
+    cost_defs = (
+        ("shipping_cents", "Shipping", "You set this"),
+        ("packing_cents", "Packing", "You set this"),
+        ("other_cents", "Other costs", "You set this"),
+        ("payment_cents", "Payment fees", "Fee"),
+        ("freedom_cents", "BrickFreedom", "Fee"),
+        ("blink_cents", "BrickLink fee", "Fee"),
+        ("bowl_cents", "BrickOwl fee", "Fee"),
+    )
+    costs = []
+    for key, label, kind in cost_defs:
+        cents = report[key]
+        if cents <= 0:
+            continue
+        costs.append(
+            {
+                "label": label,
+                "kind": kind,
+                "cents": cents,
+                "share": _share(cents, report["sales_cents"]),
+            }
+        )
+    costs.sort(key=lambda row: row["cents"], reverse=True)
+    for row in costs:
+        row["bar"] = row["share"] or 0
+
+    by_platform = {}
+    for order, bits in selected:
+        by_platform.setdefault(order.get("platform") or "Other", []).append((order, bits))
+    platforms = [_labeled_totals(name, pairs) for name, pairs in by_platform.items()]
+    platforms.sort(key=lambda row: row["sales_cents"], reverse=True)
+
+    rows = [_order_row(order, bits) for order, bits in selected]
+    order_rows = sorted(rows, key=lambda row: (row["ship_share"] is None, -(row["ship_share"] or 0), row["net_cents"]))
+    thin_rows = sorted(
+        (row for row in rows if row["thin"]),
+        key=lambda row: (row["ship_share"] or 0, row["shipping_cents"]),
+        reverse=True,
+    )
+    watch_shipping = thin_rows[:15]
+    watch_losses = sorted((row for row in rows if row["net_cents"] < 0), key=lambda row: row["net_cents"])[:8]
+
+    report.update(
+        {
+            "years": years,
+            "year": year,
+            "month": month,
+            "all_years": scope == "all",
+            "period_label": period_label,
+            "scope": scope,
+            "bucket_heading": {"all": "By year", "year": "By month", "month": "Orders"}[scope],
+            "month_choices": month_choices,
+            "costs": costs,
+            "buckets": buckets,
+            "orders": order_rows if scope == "month" else [],
+            "platforms": platforms,
+            "levers": _profit_levers(selected),
+            "gaps": _shipping_gaps(
+                selected,
+                elsewhere_has_shipping=any(
+                    bits["shipping"] > 0
+                    for _order, bits, sold_year, sold_month in dated
+                    if (year is not None and sold_year != year)
+                    or (month is not None and (sold_year != year or sold_month != month))
+                ),
+            ),
+            "watch_shipping": [] if scope == "month" else watch_shipping,
+            "watch_shipping_more": 0 if scope == "month" else max(0, len(thin_rows) - len(watch_shipping)),
+            "watch_losses": [] if scope == "month" else watch_losses,
+            "thin_count": sum(1 for row in rows if row["thin"]),
+            "has_orders": bool(dated),
+            "period_empty": not selected,
+        }
+    )
+    return report
 
 
 def _enrich_order(row) -> dict:

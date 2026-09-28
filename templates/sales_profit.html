@@ -1,0 +1,348 @@
+{% extends "base.html" %}
+{% block title %}Sales profit · Lotledger{% endblock %}
+{% block content %}
+{% macro pct(value) -%}
+{%- if value is none %}—{% else %}{{ value }}%{% endif -%}
+{%- endmacro %}
+<div class="profit-page">
+<section class="hero">
+  <div>
+    <p class="eyebrow">Sales profit</p>
+    <h1>{{ report.period_label }}</h1>
+    <p class="lede">Order total after tax, minus shipping, packing, and fees. What you paid for the lots stays on P&amp;L.</p>
+  </div>
+</section>
+
+{% if not report.has_orders %}
+<p class="empty">No orders yet. <a href="{{ url_for('sales') }}">Import sales</a> to see profit by month.</p>
+{% else %}
+
+<nav class="period-nav" aria-label="Year">
+  <a class="{% if report.all_years %}on{% endif %}" href="{{ url_for('sales_profit', year='all') }}">All years</a>
+  {% for y in report.years %}
+  <a class="{% if report.year == y and not report.all_years %}on{% endif %}" href="{{ url_for('sales_profit', year=y) }}">{{ y }}</a>
+  {% endfor %}
+</nav>
+{% if report.year and report.month_choices %}
+<nav class="period-nav sub" aria-label="Month">
+  <a class="{% if not report.month %}on{% endif %}" href="{{ url_for('sales_profit', year=report.year) }}">Full year</a>
+  {% for choice in report.month_choices %}
+  <a class="{% if report.month == choice.month %}on{% endif %}" href="{{ url_for('sales_profit', year=report.year, month=choice.month) }}">{{ choice.label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+{% if report.period_empty %}
+<p class="empty">No orders in {{ report.period_label }}.</p>
+{% else %}
+
+<div class="stats">
+  <article class="{{ 'up' if report.net_cents >= 0 else 'down' }}">
+    <span>Profit</span>
+    <strong>{{ money(report.net_cents) }}</strong>
+    <em>{{ report.order_count }} order{{ 's' if report.order_count != 1 else '' }} · before lot cost</em>
+  </article>
+  <article>
+    <span>Sales</span>
+    <strong>{{ money(report.sales_cents) }}</strong>
+    <em>after tax</em>
+  </article>
+  <article>
+    <span>Costs</span>
+    <strong>{{ money(report.cost_cents) }}</strong>
+    <em>shipping, packing, and fees</em>
+  </article>
+  <article class="{{ 'up' if report.net_cents >= 0 else 'down' }}">
+    <span>Margin</span>
+    <strong>{{ pct(report.margin) }}</strong>
+    <em>{{ money(report.per_order_cents) }} per order</em>
+  </article>
+</div>
+
+<section class="panel">
+  <h2>What to change</h2>
+  {% if report.levers or report.gaps %}
+  {% if report.levers %}
+  <p class="lede">Each amount is a separate change, ranked by how much this period's profit would move.</p>
+  {% endif %}
+  <div class="levers">
+    {% for gap in report.gaps %}
+    <article>
+      <p class="eyebrow">{{ gap.kicker }}</p>
+      <h3>{{ gap.title }}</h3>
+      <p>{{ gap.body }}</p>
+    </article>
+    {% endfor %}
+    {% for lever in report.levers %}
+    <article>
+      <p class="eyebrow">{{ lever.kicker }}</p>
+      <h3>{{ lever.title }}</h3>
+      <p>{{ lever.body }}</p>
+      {% if lever.tone == 'down' %}
+      <em class="down">Lost profit {{ money(lever.impact_cents) }}</em>
+      {% elif lever.impact_label %}
+      <em class="up">{{ lever.impact_label }}</em>
+      {% else %}
+      <em class="up">About {{ money(lever.impact_cents) }} more profit</em>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">Shipping, packing, and fees leave less than $1.00 to move in this period.</p>
+  {% endif %}
+</section>
+
+<div class="profit-split">
+  <section class="panel">
+    <h2>Where it goes</h2>
+    {% if report.costs %}
+    <table>
+      <thead>
+        <tr>
+          <th>Cost</th>
+          <th>Amount</th>
+          <th>Of sales</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cost in report.costs %}
+        <tr>
+          <td>{{ cost.label }}<small>{{ cost.kind }}</small></td>
+          <td>{{ money(cost.cents) }}</td>
+          <td>{{ pct(cost.share) }}</td>
+          <td><div class="meter wide"><i style="width: {{ cost.bar }}%"></i></div></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="lede" style="margin-top: 14px;">You set {{ money(report.controllable_cents) }}. Fees are {{ money(report.fee_cents) }}.</p>
+    {% if report.tax_cents %}
+    <p class="lede">Sales tax {{ money(report.tax_cents) }} is left out of sales and out of profit.</p>
+    {% endif %}
+    {% else %}
+    <p class="empty">No shipping, packing, or fees in this period.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>By store</h2>
+    {% if report.platforms %}
+    <table>
+      <thead>
+        <tr>
+          <th>Store</th>
+          <th>Sales</th>
+          <th>Shipping</th>
+          <th>Profit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for store in report.platforms %}
+        <tr>
+          <td>{{ store.label }}<small>{{ store.order_count }} order{{ 's' if store.order_count != 1 else '' }}</small></td>
+          <td>{{ money(store.sales_cents) }}</td>
+          <td>{{ money(store.shipping_cents) }}<small>{{ pct(store.ship_share) }}{% if store.unshipped_count %} · {{ store.unshipped_count }} at $0{% endif %}</small></td>
+          <td class="{{ 'up' if store.net_cents >= 0 else 'down' }}">
+            {{ money(store.net_cents) }}
+            <small>{{ pct(store.margin) }}</small>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No stores in this period.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>{{ report.bucket_heading }}</h2>
+  </div>
+  {% if report.scope == 'month' %}
+  {% if report.thin_count %}
+  <p class="lede">Highlighted rows spent at least a quarter of the sale on shipping.</p>
+  {% endif %}
+  <div class="table-scroll wide">
+  <table>
+    <thead>
+      <tr>
+        <th>Order</th>
+        <th>Date</th>
+        <th>Sales</th>
+        <th>Shipping</th>
+        <th>Packing</th>
+        <th>Fees</th>
+        <th>Profit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for order in report.orders %}
+      <tr class="{% if order.thin %}is-thin{% endif %}">
+        <td>
+          <a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a>
+          <small>{{ order.platform }}</small>
+        </td>
+        <td>{{ order.sold_on }}</td>
+        <td>{{ money(order.sales_cents) }}</td>
+        <td>{{ money(order.shipping_cents) }}<small>{{ pct(order.ship_share) }}</small></td>
+        <td>{{ money(order.packing_cents) }}</td>
+        <td>{{ money(order.fee_cents) }}</td>
+        <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="2">Total</td>
+        <td>{{ money(report.sales_cents) }}</td>
+        <td>{{ money(report.shipping_cents) }}</td>
+        <td>{{ money(report.packing_cents) }}</td>
+        <td>{{ money(report.fee_cents) }}</td>
+        <td class="{{ 'up' if report.net_cents >= 0 else 'down' }}">{{ money(report.net_cents) }}</td>
+      </tr>
+    </tfoot>
+  </table>
+  </div>
+  {% elif report.buckets %}
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th></th>
+        <th>Orders</th>
+        <th>Sales</th>
+        <th>Shipping</th>
+        <th>Packing</th>
+        <th>Fees</th>
+        <th>Profit</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for bucket in report.buckets %}
+      <tr>
+        <td>
+          {% if bucket.month %}
+          <a href="{{ url_for('sales_profit', year=bucket.year, month=bucket.month) }}">{{ bucket.label }}</a>
+          {% else %}
+          <a href="{{ url_for('sales_profit', year=bucket.year) }}">{{ bucket.label }}</a>
+          {% endif %}
+        </td>
+        <td>{{ bucket.order_count }}</td>
+        <td>{{ money(bucket.sales_cents) }}</td>
+        <td>
+          {{ money(bucket.shipping_cents) }}
+          {% if bucket.shipping_missing %}<small>not saved</small>{% else %}<small>{{ pct(bucket.ship_share) }}</small>{% endif %}
+        </td>
+        <td>{{ money(bucket.packing_cents) }}</td>
+        <td>{{ money(bucket.fee_cents) }}</td>
+        <td class="{{ 'up' if bucket.net_cents >= 0 else 'down' }}">
+          {{ money(bucket.net_cents) }}
+          <small>{{ pct(bucket.margin) }}</small>
+        </td>
+        <td><div class="meter {{ 'down' if bucket.net_cents < 0 else '' }}"><i style="width: {{ bucket.bar }}%"></i></div></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td>Total</td>
+        <td>{{ report.order_count }}</td>
+        <td>{{ money(report.sales_cents) }}</td>
+        <td>{{ money(report.shipping_cents) }}</td>
+        <td>{{ money(report.packing_cents) }}</td>
+        <td>{{ money(report.fee_cents) }}</td>
+        <td class="{{ 'up' if report.net_cents >= 0 else 'down' }}">{{ money(report.net_cents) }}</td>
+        <td></td>
+      </tr>
+    </tfoot>
+  </table>
+  </div>
+  {% endif %}
+</section>
+
+{% if report.watch_shipping %}
+<section class="panel">
+  <h2>Shipping takes a quarter or more</h2>
+  {% if report.watch_shipping_more %}
+  <p class="lede">Showing {{ report.watch_shipping|length }}. {{ report.watch_shipping_more }} more are in the month views.</p>
+  {% endif %}
+  <div class="table-scroll wide">
+  <table>
+    <thead>
+      <tr>
+        <th>Order</th>
+        <th>Date</th>
+        <th>Sales</th>
+        <th>Shipping</th>
+        <th>Packing</th>
+        <th>Fees</th>
+        <th>Profit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for order in report.watch_shipping %}
+      <tr>
+        <td>
+          <a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a>
+          <small>{{ order.platform }}</small>
+        </td>
+        <td>{{ order.sold_on }}</td>
+        <td>{{ money(order.sales_cents) }}</td>
+        <td>{{ money(order.shipping_cents) }}<small>{{ pct(order.ship_share) }}</small></td>
+        <td>{{ money(order.packing_cents) }}</td>
+        <td>{{ money(order.fee_cents) }}</td>
+        <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
+{% if report.watch_losses %}
+<section class="panel">
+  <h2>Orders below zero</h2>
+  <div class="table-scroll wide">
+  <table>
+    <thead>
+      <tr>
+        <th>Order</th>
+        <th>Date</th>
+        <th>Sales</th>
+        <th>Shipping</th>
+        <th>Packing</th>
+        <th>Fees</th>
+        <th>Profit</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for order in report.watch_losses %}
+      <tr>
+        <td>
+          <a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a>
+          <small>{{ order.platform }}</small>
+        </td>
+        <td>{{ order.sold_on }}</td>
+        <td>{{ money(order.sales_cents) }}</td>
+        <td>{{ money(order.shipping_cents) }}<small>{{ pct(order.ship_share) }}</small></td>
+        <td>{{ money(order.packing_cents) }}</td>
+        <td>{{ money(order.fee_cents) }}</td>
+        <td class="down">{{ money(order.net_cents) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
+{% endif %}
+{% endif %}
+</div>
+{% endblock %}

@@ -40,6 +40,7 @@ nav { display: flex; gap: 18px; }
 nav a { text-decoration: none; color: var(--muted); }
 main { max-width: 1080px; margin: 0 auto; padding: 32px 20px 80px; }
 main:has(.sales-layout) { max-width: 1280px; }
+main:has(.profit-page) { max-width: 1180px; }
 h1 { margin: 0 0 8px; font-size: 2.1rem; }
 h2 { margin: 0 0 14px; font-size: 1.15rem; }
 h3 { margin: 0 0 10px; font-size: 1.05rem; }
@@ -293,6 +294,70 @@ button:disabled {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+.period-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 22px;
+}
+.period-nav.sub { margin-top: -10px; }
+.period-nav a {
+  text-decoration: none;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 999px;
+  padding: 6px 12px;
+}
+.period-nav a.on {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.profit-split {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 18px;
+}
+.profit-split .panel { margin-bottom: 0; }
+.levers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.levers article {
+  margin: 0;
+  background: #fff8ea;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.levers h3 { margin: 0 0 6px; }
+.levers p { margin: 0 0 8px; }
+.levers em { font-style: normal; font-weight: 700; }
+.meter {
+  width: 88px;
+  height: 8px;
+  background: #efe6d6;
+  border-radius: 99px;
+  overflow: hidden;
+}
+.meter.wide { width: 100%; min-width: 72px; }
+.meter i { display: block; height: 100%; background: var(--up); }
+.meter.down i { background: var(--down); }
+tr.is-thin td { background: #fff8ea; }
+.profit-page .panel + .panel,
+.profit-split { margin-bottom: 20px; }
+.profit-page .table-scroll {
+  max-height: none;
+  overflow-x: auto;
+}
 @media (max-width: 800px) {
-  .hero, .grid-2, .sales-imports, .stats, .stats.compact, .row, .split { grid-template-columns: 1fr; display: grid; }
+  .top { flex-wrap: wrap; gap: 8px 18px; }
+  nav { flex-wrap: wrap; }
+  .hero, .grid-2, .sales-imports, .stats, .stats.compact, .row, .split, .profit-split, .levers {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+  .profit-page .stats { grid-template-columns: 1fr 1fr; }
 }

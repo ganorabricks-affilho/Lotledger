@@ -251,6 +251,16 @@ def _orders_by_month(orders):
     return groups
 
 
+@app.route("/profit")
+def sales_profit():
+    raw_year = (request.args.get("year") or "").strip()
+    raw_month = (request.args.get("month") or "").strip()
+    year = int(raw_year) if raw_year.isdigit() else None
+    month = int(raw_month) if raw_month.isdigit() else None
+    report = db.sales_profit_report(year=year, month=month, all_years=raw_year == "all")
+    return render_template("sales_profit.html", report=report)
+
+
 @app.route("/sales")
 def sales():
     orders = db.list_orders()
