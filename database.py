@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS orders (
     currency TEXT NOT NULL DEFAULT 'USD',
     shipping_cents INTEGER NOT NULL DEFAULT 0,
     packing_cents INTEGER NOT NULL DEFAULT 50,
+    packing_minutes INTEGER NOT NULL DEFAULT 0,
     other_costs_cents INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT '',
     payment_method TEXT NOT NULL DEFAULT '',
@@ -150,6 +151,7 @@ def init_db() -> None:
             ("tax_cents", "INTEGER NOT NULL DEFAULT 0"),
             ("buyer_shipping_cents", "INTEGER NOT NULL DEFAULT 0"),
             ("packing_cents", "INTEGER NOT NULL DEFAULT 50"),
+            ("packing_minutes", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in order_cols:
                 conn.execute(f"ALTER TABLE orders ADD COLUMN {name} {ddl}")
@@ -213,6 +215,24 @@ def money_input(cents: int) -> str:
     sign = "-" if cents < 0 else ""
     cents = abs(cents)
     return f"{sign}{cents // 100}.{cents % 100:02d}"
+
+
+PACKING_LABOR_CENTS_PER_HOUR = 4000  # $40/hour
+
+
+def parse_minutes(value) -> int:
+    raw = str(value or "").strip()
+    if raw == "":
+        return 0
+    try:
+        return max(0, int(round(float(raw))))
+    except ValueError:
+        return 0
+
+
+def packing_labor_cents(minutes: int) -> int:
+    """Convert packing minutes to cents at $40/hour."""
+    return int(round(max(0, int(minutes or 0)) * PACKING_LABOR_CENTS_PER_HOUR / 60))
 
 
 def get_setting(key: str) -> str:
@@ -320,12 +340,14 @@ def get_lot(lot_id: int):
     gains = live_line_net_gains(line["order_id"] for line in matched)
     net_by_bl = {}
     order_by_bl = {}
+    sold_qty_by_bl = {}
     for line in matched:
         line["net_gain_cents"] = gains.get(line["id"], int(line.get("net_gain_cents") or 0))
         bl_lot_id = line.get("bl_lot_id") or ""
         if bl_lot_id:
             net_by_bl[bl_lot_id] = net_by_bl.get(bl_lot_id, 0) + line["net_gain_cents"]
             order_by_bl[bl_lot_id] = line["order_id"]
+            sold_qty_by_bl[bl_lot_id] = sold_qty_by_bl.get(bl_lot_id, 0) + int(line.get("qty") or 0)
     revenue = sum(int(line.get("net_gain_cents") or 0) for line in matched)
     matched_groups = []
     group_index = {}
@@ -350,8 +372,18 @@ def get_lot(lot_id: int):
     items = [dict(item) for item in items]
     for item in items:
         bl_lot_id = item.get("bl_lot_id") or ""
+        listed_qty = int(item.get("qty") or 0)
+        sold_qty = int(sold_qty_by_bl.get(bl_lot_id, 0))
         item["sale_net_gain_cents"] = net_by_bl.get(bl_lot_id, 0)
         item["matched_order_id"] = order_by_bl.get(bl_lot_id)
+        item["sold_qty"] = sold_qty
+        item["remaining_qty"] = max(listed_qty - sold_qty, 0)
+        if sold_qty <= 0 and not int(item.get("matched") or 0):
+            item["match_state"] = ""
+        elif listed_qty > 0 and sold_qty < listed_qty:
+            item["match_state"] = "partial"
+        else:
+            item["match_state"] = "full"
     lot = _enrich_lot(
         {
             **dict(row),
@@ -507,6 +539,137 @@ def clear_listing(lot_id: int) -> int:
             (lot_id,),
         )
     return cur.rowcount
+
+
+def preview_listing_price_updates(bl_prices: dict) -> dict:
+    """Compare listing unit prices to BrickLink inventory prices by bl_lot_id.
+
+    Does not write. bl_prices maps inventory_id -> {price_cents, ...}.
+    """
+    with get_conn() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT
+                    li.id, li.lot_id, li.bl_lot_id, li.item_id, li.item_name,
+                    li.qty, li.price_cents, li.sale_rate, li.matched,
+                    lots.title AS lot_title
+                FROM listing_items li
+                JOIN lots ON lots.id = li.lot_id
+                WHERE li.bl_lot_id != ''
+                ORDER BY li.lot_id, li.id
+                """
+            )
+        ]
+    changes = []
+    matched = 0
+    unchanged = 0
+    missing_on_bl = []
+    missing_matched_ignored = 0
+    for row in rows:
+        inv = bl_prices.get(row["bl_lot_id"])
+        if inv is None:
+            # Sold / removed on BrickLink is expected once the listing row is matched.
+            if int(row.get("matched") or 0):
+                missing_matched_ignored += 1
+                continue
+            missing_on_bl.append(
+                {
+                    "listing_id": row["id"],
+                    "lot_id": row["lot_id"],
+                    "lot_title": row["lot_title"],
+                    "bl_lot_id": row["bl_lot_id"],
+                    "item_id": row["item_id"],
+                    "item_name": row["item_name"],
+                    "qty": row["qty"],
+                    "price_cents": row["price_cents"],
+                }
+            )
+            continue
+        matched += 1
+        old_cents = int(row["price_cents"] or 0)
+        new_cents = int(inv.get("price_cents") or 0)
+        if old_cents == new_cents:
+            unchanged += 1
+            continue
+        qty = int(row["qty"] or 0)
+        changes.append(
+            {
+                "listing_id": row["id"],
+                "lot_id": row["lot_id"],
+                "lot_title": row["lot_title"],
+                "bl_lot_id": row["bl_lot_id"],
+                "item_id": row["item_id"],
+                "item_name": row["item_name"] or inv.get("item_name") or "",
+                "qty": qty,
+                "old_cents": old_cents,
+                "new_cents": new_cents,
+                "delta_cents": new_cents - old_cents,
+                "old_line_cents": old_cents * qty,
+                "new_line_cents": new_cents * qty,
+                "bl_sale_rate": inv.get("sale_rate") or 0,
+            }
+        )
+    by_lot = {}
+    for change in changes:
+        lot_id = change["lot_id"]
+        bucket = by_lot.get(lot_id)
+        if bucket is None:
+            bucket = {
+                "lot_id": lot_id,
+                "lot_title": change["lot_title"],
+                "count": 0,
+                "up": 0,
+                "down": 0,
+                "old_line_cents": 0,
+                "new_line_cents": 0,
+            }
+            by_lot[lot_id] = bucket
+        bucket["count"] += 1
+        bucket["old_line_cents"] += change["old_line_cents"]
+        bucket["new_line_cents"] += change["new_line_cents"]
+        if change["delta_cents"] > 0:
+            bucket["up"] += 1
+        elif change["delta_cents"] < 0:
+            bucket["down"] += 1
+    lot_summaries = sorted(by_lot.values(), key=lambda row: row["lot_id"])
+    return {
+        "listing_count": len(rows),
+        "inventory_count": len(bl_prices),
+        "matched": matched,
+        "unchanged": unchanged,
+        "change_count": len(changes),
+        "missing_count": len(missing_on_bl),
+        "missing_matched_ignored": missing_matched_ignored,
+        "changes": changes,
+        "missing_on_bl": missing_on_bl,
+        "lot_summaries": lot_summaries,
+        "old_line_cents": sum(change["old_line_cents"] for change in changes),
+        "new_line_cents": sum(change["new_line_cents"] for change in changes),
+    }
+
+
+def apply_listing_price_updates(changes: list) -> int:
+    """Apply unit price updates from a preview. Returns rows updated."""
+    if not changes:
+        return 0
+    with get_conn() as conn:
+        updated = 0
+        for change in changes:
+            listing_id = change.get("listing_id")
+            new_cents = int(change.get("new_cents") or 0)
+            bl_lot_id = change.get("bl_lot_id") or ""
+            cur = conn.execute(
+                """
+                UPDATE listing_items
+                SET price_cents = ?
+                WHERE id = ? AND bl_lot_id = ?
+                """,
+                (new_cents, listing_id, bl_lot_id),
+            )
+            updated += cur.rowcount
+    return updated
 
 
 def delete_listing_item(lot_id: int, item_id: int) -> bool:
@@ -774,12 +937,20 @@ def persist_line_net_gains(order_id: int, conn: Optional[sqlite3.Connection] = N
 
 
 def update_order_costs(
-    order_id: int, shipping_cents: int, other_costs_cents: int, packing_cents: int
+    order_id: int,
+    shipping_cents: int,
+    other_costs_cents: int,
+    packing_cents: int,
+    packing_minutes: int = 0,
 ) -> None:
     with get_conn() as conn:
         conn.execute(
-            "UPDATE orders SET shipping_cents = ?, other_costs_cents = ?, packing_cents = ? WHERE id = ?",
-            (shipping_cents, other_costs_cents, packing_cents, order_id),
+            """
+            UPDATE orders
+            SET shipping_cents = ?, other_costs_cents = ?, packing_cents = ?, packing_minutes = ?
+            WHERE id = ?
+            """,
+            (shipping_cents, other_costs_cents, packing_cents, max(0, int(packing_minutes or 0)), order_id),
         )
     # Recompute and store line net gains after costs are committed so get_order
     # sees the new shipping/packing when allocating shares.
@@ -857,6 +1028,7 @@ def _order_bits(order) -> dict:
     sales = int(order.get("items_cents") or 0) - int(order.get("tax_cents") or 0)
     shipping = int(order.get("shipping_cents") or 0)
     packing = int(order.get("packing_cents") or 0)
+    labor = int(order.get("packing_labor_cents") or 0)
     other = int(order.get("other_costs_cents") or 0)
     payment = int(order.get("payment_fee_cents") or 0)
     freedom = int(order.get("brickfreedom_fee_cents") or 0)
@@ -869,13 +1041,14 @@ def _order_bits(order) -> dict:
         "gross": int(order.get("items_cents") or 0),
         "shipping": shipping,
         "packing": packing,
+        "labor": labor,
         "other": other,
         "payment": payment,
         "freedom": freedom,
         "blink": blink,
         "bowl": bowl,
         "fees": fees,
-        "costs": shipping + packing + other + fees,
+        "costs": shipping + packing + labor + other + fees,
         "net": int(order.get("net_cents") or 0),
         "buyer_shipping": int(order.get("buyer_shipping_cents") or 0),
     }
@@ -888,6 +1061,7 @@ def _sum_bits(pairs) -> dict:
         "gross",
         "shipping",
         "packing",
+        "labor",
         "other",
         "payment",
         "freedom",
@@ -921,6 +1095,7 @@ def _public_totals(total: dict) -> dict:
         "gross_cents": total["gross"],
         "shipping_cents": total["shipping"],
         "packing_cents": total["packing"],
+        "packing_labor_cents": total["labor"],
         "other_cents": total["other"],
         "payment_cents": total["payment"],
         "freedom_cents": total["freedom"],
@@ -928,7 +1103,7 @@ def _public_totals(total: dict) -> dict:
         "bowl_cents": total["bowl"],
         "fee_cents": total["fees"],
         "cost_cents": total["costs"],
-        "controllable_cents": total["shipping"] + total["packing"] + total["other"],
+        "controllable_cents": total["shipping"] + total["packing"] + total["labor"] + total["other"],
         "net_cents": total["net"],
         "buyer_shipping_cents": total["buyer_shipping"],
         "margin": _share(total["net"], total["sales"]),
@@ -955,6 +1130,7 @@ def _order_row(order, bits) -> dict:
         "sales_cents": bits["sales"],
         "shipping_cents": bits["shipping"],
         "packing_cents": bits["packing"],
+        "packing_labor_cents": bits["labor"],
         "fee_cents": bits["fees"],
         "net_cents": bits["net"],
         "ship_share": share,
@@ -1275,7 +1451,8 @@ def sales_profit_report(year: Optional[int] = None, month: Optional[int] = None,
     report = _public_totals(totals)
     cost_defs = (
         ("shipping_cents", "Shipping", "You set this"),
-        ("packing_cents", "Packing", "You set this"),
+        ("packing_cents", "Packing materials", "You set this"),
+        ("packing_labor_cents", "Packing labor", "You set this"),
         ("other_cents", "Other costs", "You set this"),
         ("payment_cents", "Payment fees", "Fee"),
         ("freedom_cents", "BrickFreedom", "Fee"),
@@ -1358,6 +1535,8 @@ def _enrich_order(row) -> dict:
     shipping = order.get("shipping_cents") or 0
     packing = order.get("packing_cents")
     packing = 50 if packing is None else int(packing)
+    packing_minutes = max(0, int(order.get("packing_minutes") or 0))
+    labor = packing_labor_cents(packing_minutes)
     other = order.get("other_costs_cents") or 0
     tax = order.get("tax_cents") or 0
     payment = (order.get("payment_method") or "").strip().lower()
@@ -1394,6 +1573,8 @@ def _enrich_order(row) -> dict:
     order["has_tax"] = tax > 0
     order["buyer_shipping_cents"] = order.get("buyer_shipping_cents") or 0
     order["packing_cents"] = packing
+    order["packing_minutes"] = packing_minutes
+    order["packing_labor_cents"] = labor
     order["brickfreedom_fee_cents"] = brickfreedom_fee_cents
     order["brickowl_fee_cents"] = brickowl_fee_cents
     order["bricklink_fee_cents"] = bricklink_fee_cents
@@ -1409,6 +1590,7 @@ def _enrich_order(row) -> dict:
         - tax
         - shipping
         - packing
+        - labor
         - other
         - fee_cents
         - brickfreedom_fee_cents

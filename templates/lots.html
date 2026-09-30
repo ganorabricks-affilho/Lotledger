@@ -2,7 +2,7 @@
 {% block title %}Lots · Lotledger{% endblock %}
 {% block content %}
 <h1>Purchased lots</h1>
-<p class="lede">One row per used lot. Cost + shipping + tax + handling is the total you need to beat.</p>
+<p class="lede">One row per used lot. Cost + shipping + tax + handling is the total you need to beat. <a href="{{ url_for('lot_price_sync') }}">Sync listing prices from BrickLink</a>.</p>
 
 <section class="grid-2">
   <form class="panel form" method="post">

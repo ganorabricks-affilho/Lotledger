@@ -147,8 +147,24 @@
   {% endif %}
   {% if lot.has_details %}
   <p class="lede">From {{ lot.details_filename }}{% if lot.details_imported_at %} · imported {{ lot.details_imported_at }}{% endif %}</p>
-  <div class="table-scroll">
-    <table>
+  {% set match_counts = namespace(full=0, partial=0, none=0) %}
+  {% for item in lot.listed_items %}
+    {% if item.match_state == 'full' %}
+      {% set match_counts.full = match_counts.full + 1 %}
+    {% elif item.match_state == 'partial' %}
+      {% set match_counts.partial = match_counts.partial + 1 %}
+    {% else %}
+      {% set match_counts.none = match_counts.none + 1 %}
+    {% endif %}
+  {% endfor %}
+  <div class="listing-filter" id="listing-match-filter" role="group" aria-label="Filter by match status">
+    <button type="button" class="ghost is-active" data-filter="all">All {{ lot.listed_items|length }}</button>
+    <button type="button" class="ghost" data-filter="full">Matched {{ match_counts.full }}</button>
+    <button type="button" class="ghost" data-filter="partial">Partial {{ match_counts.partial }}</button>
+    <button type="button" class="ghost" data-filter="none">Unmatched {{ match_counts.none }}</button>
+  </div>
+  <div class="table-scroll" id="listing-table-wrap">
+    <table id="listing-table">
       <thead>
         <tr>
           <th class="match-col" title="Matched to a sale"></th>
@@ -165,8 +181,14 @@
       </thead>
       <tbody>
         {% for item in lot.listed_items %}
-        <tr class="{{ 'is-matched' if item.matched else '' }}">
-          <td class="match-col">{% if item.matched %}<span class="match-flag" title="Matched to a sale"></span>{% endif %}</td>
+        <tr class="{% if item.match_state == 'partial' %}is-partial{% elif item.match_state == 'full' %}is-matched{% endif %}" data-match="{{ item.match_state or 'none' }}">
+          <td class="match-col">
+            {% if item.match_state == 'partial' %}
+            <span class="match-flag partial" title="Partial match: sold {{ item.sold_qty }} of {{ item.qty }}"></span>
+            {% elif item.match_state == 'full' %}
+            <span class="match-flag" title="Matched to a sale"></span>
+            {% endif %}
+          </td>
           <td>
             {% if item.image_url %}
             <img class="thumb" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
@@ -177,13 +199,19 @@
           <td>{{ item.item_id or '—' }}</td>
           <td>{{ item.bl_lot_id or '—' }}</td>
           <td>{{ item.item_name or item.item_id }}<small>{{ item.item_type }} · {{ item.condition }}{% if item.color %} · {{ item.color }}{% endif %}</small></td>
-          <td>{{ item.qty }}</td>
+          <td>
+            {% if item.match_state %}
+            {{ item.qty }}<small>sold {{ item.sold_qty }} · {{ item.remaining_qty }} left</small>
+            {% else %}
+            {{ item.qty }}
+            {% endif %}
+          </td>
           <td>{{ money(item.price_cents) }}</td>
           <td>{{ money(item.qty * item.price_cents) }}</td>
           <td>
-            {% if item.matched and item.matched_order_id %}
+            {% if item.match_state and item.matched_order_id %}
             <a class="{{ 'up' if item.sale_net_gain_cents >= 0 else 'down' }}" href="{{ url_for('order_detail', order_id=item.matched_order_id) }}">{{ money(item.sale_net_gain_cents) }}</a>
-            {% elif item.matched %}
+            {% elif item.match_state %}
             <span class="{{ 'up' if item.sale_net_gain_cents >= 0 else 'down' }}">{{ money(item.sale_net_gain_cents) }}</span>
             {% else %}
             —
@@ -215,6 +243,7 @@
         </tr>
       </tfoot>
     </table>
+    <p class="empty" id="listing-filter-empty" hidden>No rows for this filter.</p>
   </div>
   {% endif %}
 </section>
@@ -272,6 +301,33 @@
       document.body.classList.add("is-busy");
     });
   }
+</script>
+{% endif %}
+{% if lot.has_details %}
+<script>
+  (() => {
+    const filter = document.getElementById("listing-match-filter");
+    const table = document.getElementById("listing-table");
+    const empty = document.getElementById("listing-filter-empty");
+    if (!filter || !table) return;
+    const rows = Array.from(table.tBodies[0].rows);
+    filter.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-filter]");
+      if (!btn) return;
+      const mode = btn.dataset.filter;
+      filter.querySelectorAll("button[data-filter]").forEach((el) => {
+        el.classList.toggle("is-active", el === btn);
+      });
+      let visible = 0;
+      rows.forEach((row) => {
+        const show = mode === "all" || row.dataset.match === mode;
+        row.hidden = !show;
+        if (show) visible += 1;
+      });
+      if (empty) empty.hidden = visible > 0;
+      table.hidden = visible === 0;
+    });
+  })();
 </script>
 {% endif %}
 {% endblock %}

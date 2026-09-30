@@ -8,6 +8,7 @@
   --brick-dark: #8c2c24;
   --up: #1f6b45;
   --down: #b23a2f;
+  --partial: #c48a1a;
   --shadow: 0 10px 30px rgba(40, 28, 16, 0.08);
 }
 
@@ -62,6 +63,25 @@ h3 { margin: 0 0 10px; font-size: 1.05rem; }
   display: inline-block;
 }
 .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
+.listing-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+.listing-filter button.ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.92rem;
+}
+.listing-filter button.ghost.is-active {
+  color: var(--ink);
+  border-color: var(--ink);
+  background: var(--paper);
+}
 .table-scroll { max-height: 420px; overflow: auto; margin-top: 16px; }
 button.danger { background: transparent; color: var(--down); border: 1px solid var(--down); }
 button.linkish { background: none; color: var(--muted); padding: 0; border-radius: 0; }
@@ -258,8 +278,15 @@ input, select, textarea {
   background: var(--up);
   box-shadow: 0 0 0 3px rgba(31, 107, 69, 0.18);
 }
+.match-flag.partial {
+  background: var(--partial);
+  box-shadow: 0 0 0 3px rgba(196, 138, 26, 0.22);
+}
 tr.is-matched td:first-child {
   box-shadow: inset 3px 0 0 var(--up);
+}
+tr.is-partial td:first-child {
+  box-shadow: inset 3px 0 0 var(--partial);
 }
 .ids { font-size: 0.85rem; color: var(--muted); }
 .ids summary { cursor: pointer; list-style: none; letter-spacing: 0.12em; }

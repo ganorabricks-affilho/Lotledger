@@ -175,6 +175,7 @@
         <th>Sales</th>
         <th>Shipping</th>
         <th>Packing</th>
+        <th>Labor</th>
         <th>Fees</th>
         <th>Profit</th>
       </tr>
@@ -190,6 +191,7 @@
         <td>{{ money(order.sales_cents) }}</td>
         <td>{{ money(order.shipping_cents) }}<small>{{ pct(order.ship_share) }}</small></td>
         <td>{{ money(order.packing_cents) }}</td>
+        <td>{{ money(order.packing_labor_cents) }}</td>
         <td>{{ money(order.fee_cents) }}</td>
         <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
       </tr>
@@ -201,6 +203,7 @@
         <td>{{ money(report.sales_cents) }}</td>
         <td>{{ money(report.shipping_cents) }}</td>
         <td>{{ money(report.packing_cents) }}</td>
+        <td>{{ money(report.packing_labor_cents) }}</td>
         <td>{{ money(report.fee_cents) }}</td>
         <td class="{{ 'up' if report.net_cents >= 0 else 'down' }}">{{ money(report.net_cents) }}</td>
       </tr>
@@ -217,6 +220,7 @@
         <th>Sales</th>
         <th>Shipping</th>
         <th>Packing</th>
+        <th>Labor</th>
         <th>Fees</th>
         <th>Profit</th>
         <th></th>
@@ -239,6 +243,7 @@
           {% if bucket.shipping_missing %}<small>not saved</small>{% else %}<small>{{ pct(bucket.ship_share) }}</small>{% endif %}
         </td>
         <td>{{ money(bucket.packing_cents) }}</td>
+        <td>{{ money(bucket.packing_labor_cents) }}</td>
         <td>{{ money(bucket.fee_cents) }}</td>
         <td class="{{ 'up' if bucket.net_cents >= 0 else 'down' }}">
           {{ money(bucket.net_cents) }}
@@ -255,6 +260,7 @@
         <td>{{ money(report.sales_cents) }}</td>
         <td>{{ money(report.shipping_cents) }}</td>
         <td>{{ money(report.packing_cents) }}</td>
+        <td>{{ money(report.packing_labor_cents) }}</td>
         <td>{{ money(report.fee_cents) }}</td>
         <td class="{{ 'up' if report.net_cents >= 0 else 'down' }}">{{ money(report.net_cents) }}</td>
         <td></td>
@@ -280,6 +286,7 @@
         <th>Sales</th>
         <th>Shipping</th>
         <th>Packing</th>
+        <th>Labor</th>
         <th>Fees</th>
         <th>Profit</th>
       </tr>
@@ -295,6 +302,7 @@
         <td>{{ money(order.sales_cents) }}</td>
         <td>{{ money(order.shipping_cents) }}<small>{{ pct(order.ship_share) }}</small></td>
         <td>{{ money(order.packing_cents) }}</td>
+        <td>{{ money(order.packing_labor_cents) }}</td>
         <td>{{ money(order.fee_cents) }}</td>
         <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
       </tr>
@@ -317,6 +325,7 @@
         <th>Sales</th>
         <th>Shipping</th>
         <th>Packing</th>
+        <th>Labor</th>
         <th>Fees</th>
         <th>Profit</th>
       </tr>
@@ -332,6 +341,7 @@
         <td>{{ money(order.sales_cents) }}</td>
         <td>{{ money(order.shipping_cents) }}<small>{{ pct(order.ship_share) }}</small></td>
         <td>{{ money(order.packing_cents) }}</td>
+        <td>{{ money(order.packing_labor_cents) }}</td>
         <td>{{ money(order.fee_cents) }}</td>
         <td class="down">{{ money(order.net_cents) }}</td>
       </tr>
