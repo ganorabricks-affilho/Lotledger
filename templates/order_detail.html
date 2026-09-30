@@ -28,6 +28,11 @@
     <strong>−{{ money(order.packing_cents) }}</strong>
     <em>defaults to $0.50</em>
   </article>
+  <article class="down">
+    <span>Packing labor</span>
+    <strong>−{{ money(order.packing_labor_cents) }}</strong>
+    <em>{{ order.packing_minutes }} min × $40/hr</em>
+  </article>
   {% if order.has_tax %}
   <article class="down">
     <span>Tax</span>
@@ -64,9 +69,9 @@
     <span>Net gain</span>
     <strong>{{ money(order.net_cents) }}</strong>
     {% if order.is_bricklink %}
-    <em>grand total − tax − shipping − packing materials{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickLink 3% · split across items</em>
+    <em>grand total − tax − shipping − packing materials − packing labor{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickLink 3% · split across items</em>
     {% else %}
-    <em>order total − shipping − packing materials{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickOwl · split across items</em>
+    <em>order total − shipping − packing materials − packing labor{% if order.has_payment_fee %} − {{ order.payment_fee_label }}{% endif %} − BrickFreedom − BrickOwl · split across items</em>
     {% endif %}
   </article>
 </div>
@@ -82,6 +87,10 @@
         <input name="packing" inputmode="decimal" value="{{ money_input(order.packing_cents) }}">
       </label>
     </div>
+    <label>Packing minutes
+      <input type="number" name="packing_minutes" min="0" step="1" value="{{ order.packing_minutes }}">
+    </label>
+    <p class="lede">Labor is deducted at $40/hour ({{ money(order.packing_labor_cents) }} for {{ order.packing_minutes }} min).</p>
     <input type="hidden" name="other_costs" value="{{ money_input(order.other_costs_cents) }}">
     <button type="submit">Save</button>
   </form>

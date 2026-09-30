@@ -213,6 +213,52 @@ def lot_delete(lot_id):
     return redirect(url_for("dashboard"))
 
 
+@app.route("/lots/price-sync", methods=["GET", "POST"])
+def lot_price_sync():
+    preview = session.get("price_sync_preview")
+    if request.method == "POST":
+        action = request.form.get("action") or "preview"
+        if action == "reject":
+            session.pop("price_sync_preview", None)
+            flash("Price sync cancelled. Nothing was changed.")
+            return redirect(url_for("lot_price_sync"))
+        if action == "apply":
+            pending = session.get("price_sync_preview")
+            if not pending or not pending.get("changes"):
+                session.pop("price_sync_preview", None)
+                flash("No pending price changes to apply.")
+                return redirect(url_for("lot_price_sync"))
+            updated = db.apply_listing_price_updates(pending["changes"])
+            session.pop("price_sync_preview", None)
+            flash(f"Updated unit prices on {updated} listing row{'s' if updated != 1 else ''}.")
+            return redirect(url_for("lots"))
+        # preview
+        try:
+            creds = bricklink.creds_from_settings(db.get_setting)
+        except ValueError as exc:
+            flash(str(exc))
+            return redirect(url_for("settings"))
+        try:
+            prices = bricklink.inventory_unit_prices(creds)
+        except ValueError as exc:
+            flash(str(exc))
+            return redirect(url_for("lot_price_sync"))
+        preview = db.preview_listing_price_updates(prices)
+        session["price_sync_preview"] = preview
+        if preview["change_count"] == 0:
+            flash(
+                f"Checked {preview['matched']} listing rows against BrickLink. "
+                "All matched unit prices already match. Nothing to apply."
+            )
+        else:
+            flash(
+                f"Preview ready: {preview['change_count']} price change"
+                f"{'s' if preview['change_count'] != 1 else ''} pending approval."
+            )
+        return redirect(url_for("lot_price_sync"))
+    return render_template("lot_price_sync.html", preview=preview)
+
+
 def _orders_by_month(orders):
     groups = []
     index = {}
@@ -237,6 +283,7 @@ def _orders_by_month(orders):
                 "items_cents": 0,
                 "shipping_cents": 0,
                 "packing_cents": 0,
+                "packing_labor_cents": 0,
                 "net_cents": 0,
             }
             index[key] = group
@@ -247,8 +294,19 @@ def _orders_by_month(orders):
         group["items_cents"] += int(order.get("items_cents") or 0)
         group["shipping_cents"] += int(order.get("shipping_cents") or 0)
         group["packing_cents"] += int(order.get("packing_cents") or 0)
+        group["packing_labor_cents"] += int(order.get("packing_labor_cents") or 0)
         group["net_cents"] += int(order.get("net_cents") or 0)
     return groups
+
+
+@app.route("/profit")
+def sales_profit():
+    raw_year = (request.args.get("year") or "").strip()
+    raw_month = (request.args.get("month") or "").strip()
+    year = int(raw_year) if raw_year.isdigit() else None
+    month = int(raw_month) if raw_month.isdigit() else None
+    report = db.sales_profit_report(year=year, month=month, all_years=raw_year == "all")
+    return render_template("sales_profit.html", report=report)
 
 
 @app.route("/sales")
@@ -345,6 +403,7 @@ def order_costs(order_id):
         db.parse_money(request.form.get("shipping")),
         db.parse_money(request.form.get("other_costs")),
         db.parse_money(request.form.get("packing")),
+        db.parse_minutes(request.form.get("packing_minutes")),
     )
     order = db.get_order(order_id)
     flash(

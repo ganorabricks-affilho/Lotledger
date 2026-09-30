@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Sync listing prices · Lotledger{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('lots') }}">Lots</a> / sync prices</p>
+<h1>Sync listing prices from BrickLink</h1>
+<p class="lede">Fetches your live BrickLink inventory and compares unit prices to existing listing rows by BL lot ID. No rows are added or removed. Approve to write new unit prices only.</p>
+
+{% if not preview %}
+<form class="panel form" method="post" id="price-sync-preview">
+  <h2>Preview</h2>
+  <p class="lede">Pull current store inventory and show what would change. Nothing is saved until you approve.</p>
+  <button type="submit" name="action" value="preview" id="price-sync-preview-btn">Preview price updates</button>
+  <p class="import-status" id="price-sync-preview-status" hidden>Fetching BrickLink inventory… this can take a bit.</p>
+</form>
+{% else %}
+<section class="stats compact">
+  <article>
+    <span>Matched on BrickLink</span>
+    <strong>{{ preview.matched }}</strong>
+    <em>of {{ preview.listing_count }} listing rows with a BL lot ID</em>
+  </article>
+  <article>
+    <span>Would update</span>
+    <strong>{{ preview.change_count }}</strong>
+    <em>{{ preview.unchanged }} already match</em>
+  </article>
+  <article>
+    <span>Listed value delta</span>
+    <strong class="{{ 'up' if preview.new_line_cents >= preview.old_line_cents else 'down' }}">{{ money(preview.new_line_cents - preview.old_line_cents) }}</strong>
+    <em>{{ money(preview.old_line_cents) }} → {{ money(preview.new_line_cents) }} on changed rows</em>
+  </article>
+  <article>
+    <span>Not on BrickLink now</span>
+    <strong>{{ preview.missing_count }}</strong>
+    <em>unmatched only{% if preview.missing_matched_ignored %} · {{ preview.missing_matched_ignored }} matched ignored{% endif %}</em>
+  </article>
+</section>
+
+<form class="panel form hero-actions" method="post" style="gap: 10px;">
+  {% if preview.change_count %}
+  <button type="submit" name="action" value="apply">Approve and update {{ preview.change_count }} price{{ 's' if preview.change_count != 1 else '' }}</button>
+  {% endif %}
+  <button class="btn ghost" type="submit" name="action" value="reject" style="background: transparent; color: var(--ink); border: 1px solid var(--ink);">Reject / clear preview</button>
+</form>
+
+{% if preview.lot_summaries %}
+<section class="panel">
+  <h2>By lot</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Lot</th>
+        <th>Changes</th>
+        <th>Up</th>
+        <th>Down</th>
+        <th>Listed value</th>
+        <th>Delta</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for lot in preview.lot_summaries %}
+      <tr>
+        <td><a href="{{ url_for('lot_detail', lot_id=lot.lot_id) }}">#{{ lot.lot_id }} {{ lot.lot_title }}</a></td>
+        <td>{{ lot.count }}</td>
+        <td>{{ lot.up }}</td>
+        <td>{{ lot.down }}</td>
+        <td>{{ money(lot.old_line_cents) }} → {{ money(lot.new_line_cents) }}</td>
+        <td class="{{ 'up' if lot.new_line_cents >= lot.old_line_cents else 'down' }}">{{ money(lot.new_line_cents - lot.old_line_cents) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if preview.changes %}
+<section class="panel">
+  <h2>Rows that would change</h2>
+  <div class="table-scroll wide">
+  <table>
+    <thead>
+      <tr>
+        <th>Lot</th>
+        <th>BL lot ID</th>
+        <th>Item</th>
+        <th>Qty</th>
+        <th>Current</th>
+        <th>BrickLink</th>
+        <th>Line delta</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in preview.changes %}
+      <tr>
+        <td>#{{ row.lot_id }}</td>
+        <td>{{ row.bl_lot_id }}</td>
+        <td>{{ row.item_id }}<small>{{ row.item_name }}</small></td>
+        <td>{{ row.qty }}</td>
+        <td>{{ money(row.old_cents) }}</td>
+        <td>{{ money(row.new_cents) }}{% if row.bl_sale_rate %}<small>after {{ row.bl_sale_rate }}% sale</small>{% endif %}</td>
+        <td class="{{ 'up' if row.new_line_cents >= row.old_line_cents else 'down' }}">{{ money(row.new_line_cents - row.old_line_cents) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
+{% if preview.missing_on_bl %}
+<section class="panel">
+  <h2>On a lot but not in live BrickLink inventory</h2>
+  <p class="lede">Unmatched rows only — matched sales already gone from BrickLink are ignored.</p>
+  <div class="table-scroll wide">
+  <table>
+    <thead>
+      <tr>
+        <th>Lot</th>
+        <th>BL lot ID</th>
+        <th>Item</th>
+        <th>Qty</th>
+        <th>Unit price</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in preview.missing_on_bl %}
+      <tr>
+        <td>#{{ row.lot_id }}</td>
+        <td>{{ row.bl_lot_id }}</td>
+        <td>{{ row.item_id }}<small>{{ row.item_name }}</small></td>
+        <td>{{ row.qty }}</td>
+        <td>{{ money(row.price_cents) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endif %}
+
+<script>
+  const form = document.getElementById("price-sync-preview");
+  const btn = document.getElementById("price-sync-preview-btn");
+  const status = document.getElementById("price-sync-preview-status");
+  if (form && btn && status) {
+    form.addEventListener("submit", () => {
+      btn.disabled = true;
+      btn.textContent = "Previewing…";
+      status.hidden = false;
+      document.body.classList.add("is-busy");
+    });
+  }
+</script>
+{% endblock %}

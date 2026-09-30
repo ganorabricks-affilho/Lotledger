@@ -216,6 +216,28 @@ def inventories_for_date(creds: dict, created_on: str) -> list:
     return inventories_for_dates(creds, [created_on])
 
 
+def inventory_unit_prices(creds: dict) -> dict:
+    """Map BrickLink inventory_id -> effective unit price cents (after sale %)."""
+    prices = {}
+    for raw in list_inventories(creds):
+        bl_lot_id = str(raw.get("inventory_id") or "")
+        if not bl_lot_id:
+            continue
+        sale_rate = to_int(raw.get("sale_rate"))
+        unit = float(str(raw.get("unit_price") or "0").replace(",", "") or 0)
+        if sale_rate > 0:
+            unit = unit * (100 - sale_rate) / 100.0
+        item = raw.get("item") if isinstance(raw.get("item"), dict) else {}
+        prices[bl_lot_id] = {
+            "price_cents": int(round(unit * 100)),
+            "sale_rate": max(0, sale_rate),
+            "unit_price_raw": str(raw.get("unit_price") or ""),
+            "item_id": str(item.get("no") or ""),
+            "item_name": str(item.get("name") or ""),
+        }
+    return prices
+
+
 def normalize_inventory_item(raw: dict) -> dict:
     item = raw.get("item") if isinstance(raw.get("item"), dict) else {}
     item_no = str(item.get("no") or "")

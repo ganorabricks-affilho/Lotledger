@@ -58,6 +58,7 @@
           <th>Total</th>
           <th>Shipping</th>
           <th>Packing</th>
+          <th>Labor</th>
           <th>Net gain</th>
           <th></th>
         </tr>
@@ -71,6 +72,7 @@
           <td>{{ money(group.items_cents) }}</td>
           <td>{{ money(group.shipping_cents) }}</td>
           <td>{{ money(group.packing_cents) }}</td>
+          <td>{{ money(group.packing_labor_cents) }}</td>
           <td class="{{ 'up' if group.net_cents >= 0 else 'down' }}">{{ money(group.net_cents) }}</td>
           <td></td>
         </tr>
@@ -85,6 +87,7 @@
           <td>{{ money(order.items_cents) }}</td>
           <td>{{ money(order.shipping_cents) }}</td>
           <td>{{ money(order.packing_cents) }}</td>
+          <td>{{ money(order.packing_labor_cents) }}</td>
           <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
           <td>
             <form class="inline" method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete order {{ order.order_number }}? You can reimport it later.')">
