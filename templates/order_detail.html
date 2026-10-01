@@ -111,7 +111,7 @@
           <th>Cost</th>
           <th>Line total</th>
           <th>Net gain</th>
-          <th>Personal note</th>
+          <th>Lot</th>
           <th></th>
         </tr>
       </thead>
@@ -130,13 +130,20 @@
           <td>{{ money3(line.price_cents) }}</td>
           <td>{{ money3(line.qty * line.price_cents) }}</td>
           <td class="{{ 'up' if line.net_gain_cents >= 0 else 'down' }}">{{ money(line.net_gain_cents) }}</td>
-          <td>{{ line.personal_note or '—' }}</td>
+          <td>
+            {% if line.lot_id %}
+            <a href="{{ url_for('lot_detail', lot_id=line.lot_id) }}">#{{ line.lot_id }}{% if line.lot_title %} · {{ line.lot_title }}{% endif %}</a>
+            {% else %}
+            —
+            {% endif %}
+          </td>
           <td>
             <details class="ids">
               <summary>⋯</summary>
               <p>Type {{ line.item_type or '—' }}</p>
               <p>Color {{ line.color_name or '—' }}</p>
               <p>Condition {{ line.condition or '—' }}</p>
+              <p>Personal note {{ line.personal_note or '—' }}</p>
               <p>BOID {{ line.boid or '—' }}</p>
               <p>Lot ID {{ line.owl_lot_id or '—' }}</p>
               <p>BL lot ID {{ line.bl_lot_id or '—' }}</p>
