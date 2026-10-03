@@ -217,7 +217,7 @@ def money_input(cents: int) -> str:
     return f"{sign}{cents // 100}.{cents % 100:02d}"
 
 
-PACKING_LABOR_CENTS_PER_HOUR = 4000  # $40/hour
+PACKING_LABOR_CENTS_PER_HOUR = 1200  # $12/hour
 
 
 def parse_minutes(value) -> int:
@@ -231,7 +231,7 @@ def parse_minutes(value) -> int:
 
 
 def packing_labor_cents(minutes: int) -> int:
-    """Convert packing minutes to cents at $40/hour."""
+    """Convert packing minutes to cents at $12/hour."""
     return int(round(max(0, int(minutes or 0)) * PACKING_LABOR_CENTS_PER_HOUR / 60))
 
 

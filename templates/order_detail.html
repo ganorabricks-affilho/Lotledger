@@ -31,7 +31,7 @@
   <article class="down">
     <span>Packing labor</span>
     <strong>−{{ money(order.packing_labor_cents) }}</strong>
-    <em>{{ order.packing_minutes }} min × $40/hr</em>
+    <em>{{ order.packing_minutes }} min × $12/hr</em>
   </article>
   {% if order.has_tax %}
   <article class="down">
@@ -90,7 +90,7 @@
     <label>Packing minutes
       <input type="number" name="packing_minutes" min="0" step="1" value="{{ order.packing_minutes }}">
     </label>
-    <p class="lede">Labor is deducted at $40/hour ({{ money(order.packing_labor_cents) }} for {{ order.packing_minutes }} min).</p>
+    <p class="lede">Labor is deducted at $12/hour ({{ money(order.packing_labor_cents) }} for {{ order.packing_minutes }} min).</p>
     <input type="hidden" name="other_costs" value="{{ money_input(order.other_costs_cents) }}">
     <button type="submit">Save</button>
   </form>
