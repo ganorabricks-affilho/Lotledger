@@ -91,6 +91,14 @@ def collect_new_orders(api_key: str, limit: int, existing_numbers) -> list:
     return parsed
 
 
+def fetch_order_bundle(api_key: str, order_number: str, list_row: dict = None) -> dict:
+    """Fetch full order + items payloads for storage / backfill."""
+    view = fetch_order_view(api_key, order_number)
+    time.sleep(0.12)
+    items = fetch_order_items(api_key, order_number)
+    return normalize_order(list_row or {}, items, view)
+
+
 def normalize_order(raw: dict, items: list, view: dict = None) -> dict:
     view = view or {}
     order_number = str(pick(raw, "order_id") or pick(view, "order_id") or "")
@@ -115,6 +123,11 @@ def normalize_order(raw: dict, items: list, view: dict = None) -> dict:
             pick(raw, "base_order_total", "total", "grand_total")
             or pick(view, "base_order_total", "total", "grand_total")
         ),
+        "api_json": json.dumps(
+            {"list": raw or {}, "view": view or {}, "items": items or []},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
         "lines": [normalize_item(item) for item in items],
     }
 
@@ -138,6 +151,7 @@ def normalize_item(raw: dict) -> dict:
         "owl_lot_id": str(pick(raw, "lot_id") or ""),
         "bl_lot_id": str(pick(raw, "bl_lot_id", "bllot_id") or ""),
         "personal_note": str(pick(raw, "personal_note", "note") or ""),
+        "api_json": json.dumps(raw or {}, ensure_ascii=False, separators=(",", ":")),
     }
 
 

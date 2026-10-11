@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ item.item_no }} · Inventory · Ganorabricks{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('inventory') }}">Inventory</a> / {{ item.bl_inventory_id }}</p>
+<section class="hero">
+  <div class="detail-title">
+    {% if item.image_url %}
+    <img class="thumb lg" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer">
+    {% endif %}
+    <div>
+      <p class="eyebrow">{{ item.type_label or item.item_type }} · BrickLink {{ item.bl_inventory_id }}</p>
+      <h1>{{ item.item_no }} {{ item.item_name }}</h1>
+      <p class="lede">{{ item.color_name }}{% if item.condition_label %} · {{ item.condition_label }}{% endif %} · {{ item.where_label }}</p>
+    </div>
+  </div>
+  <div class="hero-actions">
+    {% if item.bricklink_url %}
+    <a class="btn" href="{{ item.bricklink_url }}" target="_blank" rel="noreferrer">Open in BrickLink</a>
+    {% endif %}
+    {% if item.catalog_url %}
+    <a class="btn ghost" href="{{ item.catalog_url }}" target="_blank" rel="noreferrer">Catalog</a>
+    {% endif %}
+  </div>
+</section>
+
+<div class="panel">
+  <h2>Listing</h2>
+  <dl class="fields">
+    <dt>Inventory ID</dt><dd>{{ item.bl_inventory_id }}</dd>
+    <dt>Item</dt><dd>{{ item.item_no }} · {{ item.item_name }}</dd>
+    <dt>Type</dt><dd>{{ item.type_label or item.item_type }} <small>{{ item.item_type }}</small></dd>
+    <dt>Category ID</dt><dd>{{ item.category_id or "—" }}</dd>
+    <dt>Color</dt><dd>{{ item.color_name or "—" }}{% if item.color_id %} <small>id {{ item.color_id }}</small>{% endif %}</dd>
+    <dt>Condition</dt><dd>{{ item.condition_label or "—" }}{% if item.new_or_used %} <small>{{ item.new_or_used }}</small>{% endif %}</dd>
+    {% if item.completeness %}
+    <dt>Completeness</dt><dd>{{ item.completeness_label }} <small>{{ item.completeness }}</small></dd>
+    {% endif %}
+    <dt>Quantity</dt><dd>{{ '{:,}'.format(item.quantity) }}</dd>
+    <dt>Unit price</dt><dd>{{ money3(item.unit_price_milli) }}{% if item.unit_price %} <small>API {{ item.unit_price }}</small>{% endif %}</dd>
+    <dt>Sale rate</dt><dd>{% if item.sale_rate %}{{ item.sale_rate }}% · effective {{ money3(item.effective_milli) }}{% else %}None{% endif %}</dd>
+    <dt>For sale</dt><dd>{{ item.where_label }}</dd>
+    <dt>Retain</dt><dd>{{ "Yes" if item.is_retain else "No" }}</dd>
+    <dt>Stockroom</dt><dd>{% if item.is_stock_room %}{{ item.stock_room_id or "Yes" }}{% else %}No{% endif %}</dd>
+    <dt>Bulk</dt><dd>{{ item.bulk }}</dd>
+    {% if item.bind_id and item.bind_id != "0" %}
+    <dt>Bind ID</dt><dd>{{ item.bind_id }}</dd>
+    {% endif %}
+    <dt>My cost</dt><dd>{% if item.my_cost and item.my_cost not in ["0", "0.0", "0.00", "0.000", "0.0000"] %}{{ money3(item.my_cost_milli) }} <small>API {{ item.my_cost }}</small>{% else %}—{% endif %}</dd>
+    <dt>My weight</dt><dd>{{ item.my_weight or "—" }}</dd>
+    <dt>Date created</dt><dd>{{ item.date_created or "—" }}</dd>
+    <dt>Imported</dt><dd>{{ item.imported_at or "—" }}</dd>
+    {% if item.tier_quantity1 %}
+    <dt>Tier 1</dt><dd>{{ item.tier_quantity1 }} at {{ item.tier_price1 }}</dd>
+    {% endif %}
+    {% if item.tier_quantity2 %}
+    <dt>Tier 2</dt><dd>{{ item.tier_quantity2 }} at {{ item.tier_price2 }}</dd>
+    {% endif %}
+    {% if item.tier_quantity3 %}
+    <dt>Tier 3</dt><dd>{{ item.tier_quantity3 }} at {{ item.tier_price3 }}</dd>
+    {% endif %}
+    {% if item.remarks %}
+    <dt>Remarks</dt><dd>{{ item.remarks }}</dd>
+    {% endif %}
+    {% if item.description %}
+    <dt>Description</dt><dd class="pre">{{ item.description }}</dd>
+    {% endif %}
+  </dl>
+</div>
+
+<details class="panel">
+  <summary>BrickLink payload</summary>
+  <pre class="json-out">{{ pretty_json }}</pre>
+</details>
+{% endblock %}

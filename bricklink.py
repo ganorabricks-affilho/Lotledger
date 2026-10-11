@@ -84,7 +84,7 @@ def resolve_lab_path(path: str, params: dict) -> tuple:
     return path, query
 
 
-def call(creds: dict, path: str, params: dict = None, method: str = "GET", body=None) -> dict:
+def call(creds: dict, path: str, params: dict = None, method: str = "GET", body=None, timeout: int = 45) -> dict:
     method = (method or "GET").upper()
     query = {}
     for name, value in (params or {}).items():
@@ -108,7 +108,7 @@ def call(creds: dict, path: str, params: dict = None, method: str = "GET", body=
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(full, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             status = resp.status
     except urllib.error.HTTPError as exc:
@@ -185,7 +185,7 @@ def creds_from_settings(get_setting) -> dict:
 
 
 def list_inventories(creds: dict, params: dict = None) -> list:
-    data = _data(call(creds, "inventories", params or {}))
+    data = _data(call(creds, "inventories", params or {}, timeout=120))
     return data if isinstance(data, list) else []
 
 
@@ -270,6 +270,122 @@ def normalize_inventory_item(raw: dict) -> dict:
     }
 
 
+ITEM_TYPE_LABELS = {
+    "PART": "Part",
+    "MINIFIG": "Minifig",
+    "SET": "Set",
+    "BOOK": "Book",
+    "GEAR": "Gear",
+    "CATALOG": "Catalog",
+    "INSTRUCTION": "Instruction",
+    "ORIGINAL_BOX": "Box",
+    "UNSORTED_LOT": "Unsorted lot",
+}
+
+COMPLETENESS_LABELS = {
+    "C": "Complete",
+    "B": "Incomplete",
+    "S": "Sealed",
+}
+
+CATALOG_PREFIX = {
+    "PART": "P",
+    "MINIFIG": "M",
+    "SET": "S",
+    "BOOK": "B",
+    "GEAR": "G",
+    "CATALOG": "C",
+    "INSTRUCTION": "I",
+    "ORIGINAL_BOX": "O",
+    "UNSORTED_LOT": "U",
+}
+
+
+def catalog_url(item_type: str, item_no: str) -> str:
+    number = (item_no or "").strip()
+    if not number:
+        return ""
+    prefix = CATALOG_PREFIX.get((item_type or "").upper(), "P")
+    return (
+        "https://www.bricklink.com/v2/catalog/catalogitem.page?"
+        f"{prefix}={urllib.parse.quote(number)}"
+    )
+
+
+def _text(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _flag(value) -> int:
+    if value is True or value == 1:
+        return 1
+    if isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "y"}:
+        return 1
+    return 0
+
+
+def snapshot_item(raw: dict) -> dict:
+    """One BrickLink store-inventory lot, including the raw payload."""
+    item = raw.get("item") if isinstance(raw.get("item"), dict) else {}
+    item_no = _text(item.get("no"))
+    item_type = _text(item.get("type")).upper()
+    color_id = _text(raw.get("color_id"))
+    unit_price = _text(raw.get("unit_price"))
+    my_cost = _text(raw.get("my_cost"))
+    sale_rate = max(0, min(100, to_int(raw.get("sale_rate"))))
+    return {
+        "bl_inventory_id": _text(raw.get("inventory_id")),
+        "item_no": item_no,
+        "item_name": _text(item.get("name")),
+        "item_type": item_type,
+        "category_id": _text(item.get("category_id")),
+        "color_id": color_id,
+        "color_name": _text(raw.get("color_name")),
+        "quantity": to_int(raw.get("quantity")),
+        "new_or_used": _text(raw.get("new_or_used")).upper(),
+        "completeness": _text(raw.get("completeness")).upper(),
+        "unit_price": unit_price,
+        "unit_price_milli": money_milli(unit_price),
+        "bind_id": _text(raw.get("bind_id")),
+        "description": _text(raw.get("description")),
+        "remarks": _text(raw.get("remarks")),
+        "bulk": to_int(raw.get("bulk")),
+        "is_retain": _flag(raw.get("is_retain")),
+        "is_stock_room": _flag(raw.get("is_stock_room")),
+        "stock_room_id": _text(raw.get("stock_room_id")).upper(),
+        "date_created": _text(raw.get("date_created")),
+        "my_cost": my_cost,
+        "my_cost_milli": money_milli(my_cost),
+        "sale_rate": sale_rate,
+        "tier_quantity1": to_int(raw.get("tier_quantity1")),
+        "tier_price1": _text(raw.get("tier_price1")),
+        "tier_quantity2": to_int(raw.get("tier_quantity2")),
+        "tier_price2": _text(raw.get("tier_price2")),
+        "tier_quantity3": to_int(raw.get("tier_quantity3")),
+        "tier_price3": _text(raw.get("tier_price3")),
+        "my_weight": _text(raw.get("my_weight")),
+        "image_url": image_url(item_type, item_no, color_id) if item_no else "",
+        "api_json": json.dumps(raw, ensure_ascii=False, sort_keys=True),
+    }
+
+
+def fetch_inventory_snapshot(creds: dict) -> list:
+    rows = []
+    seen = set()
+    for raw in list_inventories(creds):
+        if not isinstance(raw, dict):
+            continue
+        row = snapshot_item(raw)
+        bl_id = row["bl_inventory_id"]
+        if not bl_id or bl_id in seen:
+            continue
+        seen.add(bl_id)
+        rows.append(row)
+    return rows
+
+
 def list_store_orders(creds: dict, limit: int) -> list:
     data = _data(call(creds, "orders", {"direction": "in"}))
     orders = data if isinstance(data, list) else []
@@ -307,6 +423,14 @@ def collect_new_orders(creds: dict, limit: int, existing_numbers) -> list:
         parsed.append(normalize_order(raw, items, detail))
         time.sleep(0.12)
     return parsed
+
+
+def fetch_order_bundle(creds: dict, order_number: str, list_row: dict = None) -> dict:
+    """Fetch full order + items payloads for storage / backfill."""
+    detail = fetch_order(creds, order_number)
+    time.sleep(0.12)
+    items = fetch_order_items(creds, order_number)
+    return normalize_order(list_row or {}, items, detail)
 
 
 def normalize_order(raw: dict, items: list, detail: dict = None) -> dict:
@@ -356,6 +480,11 @@ def normalize_order(raw: dict, items: list, detail: dict = None) -> dict:
         "tax_cents": tax_cents,
         "buyer_shipping_cents": api_shipping_cents,
         "shipping_cents": 0,
+        "api_json": json.dumps(
+            {"list": raw or {}, "detail": detail or {}, "items": items or []},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
         "lines": [normalize_item(item) for item in items],
     }
 
@@ -364,6 +493,7 @@ def normalize_item(raw: dict) -> dict:
     item = raw.get("item") if isinstance(raw.get("item"), dict) else {}
     item_no = str(item.get("no") or "")
     color_id = str(raw.get("color_id") if raw.get("color_id") is not None else "")
+    color_name = str(raw.get("color_name") or color_id)
     condition = str(raw.get("new_or_used") or "")
     if condition.upper() == "N":
         condition = "New"
@@ -376,7 +506,7 @@ def normalize_item(raw: dict) -> dict:
         "category_id": str(item.get("category_id") or item.get("categoryID") or ""),
         "category_name": "",
         "color_id": color_id,
-        "color_name": color_id,
+        "color_name": color_name,
         "qty": to_int(raw.get("quantity")),
         "condition": condition,
         "price_cents": money_milli(
@@ -390,6 +520,7 @@ def normalize_item(raw: dict) -> dict:
         "owl_lot_id": "",
         "bl_lot_id": str(raw.get("inventory_id") or ""),
         "personal_note": str(raw.get("remarks") or ""),
+        "api_json": json.dumps(raw or {}, ensure_ascii=False, separators=(",", ":")),
     }
 
 

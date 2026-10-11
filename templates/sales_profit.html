@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Sales profit · Lotledger{% endblock %}
+{% block title %}Sales profit · Ganorabricks{% endblock %}
 {% block content %}
 {% macro pct(value) -%}
 {%- if value is none %}—{% else %}{{ value }}%{% endif -%}
@@ -36,11 +36,16 @@
 <p class="empty">No orders in {{ report.period_label }}.</p>
 {% else %}
 
-<div class="stats">
+<div class="stats profit-stats">
   <article class="{{ 'up' if report.net_cents >= 0 else 'down' }}">
     <span>Profit</span>
     <strong>{{ money(report.net_cents) }}</strong>
     <em>{{ report.order_count }} order{{ 's' if report.order_count != 1 else '' }} · before lot cost</em>
+  </article>
+  <article class="{{ 'up' if report.profit_after_lot_cents >= 0 else 'down' }}">
+    <span>After lot cost</span>
+    <strong>{{ money(report.profit_after_lot_cents) }}</strong>
+    <em>profit − {{ money(report.lot_cost_cents) }} lot cost</em>
   </article>
   <article>
     <span>Sales</span>
@@ -58,6 +63,37 @@
     <em>{{ money(report.per_order_cents) }} per order</em>
   </article>
 </div>
+
+{% if report.charts and report.charts.avg_order.bars %}
+<section class="profit-charts">
+  <article class="panel">
+    <h2>Average order profit</h2>
+    <p class="lede">Profit ÷ orders{% if report.year and not report.all_years %} · {{ report.year }}{% endif %}</p>
+    <div class="bar-chart" role="img" aria-label="Average order profit by month">
+      {% for bar in report.charts.avg_order.bars %}
+      <div class="bar-col {% if bar.highlight %}is-on{% endif %} {% if bar.negative %}is-down{% endif %}" title="{{ bar.label }}: {{ money(bar.value_cents) }} · {{ bar.order_count }} order{{ 's' if bar.order_count != 1 else '' }}">
+        <span class="bar-value">{{ money(bar.value_cents) }}</span>
+        <span class="bar-fill" style="height: {{ bar.height }}%"></span>
+        <span class="bar-label">{{ bar.label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </article>
+  <article class="panel">
+    <h2>Average lot profit per order</h2>
+    <p class="lede">Mean of (order profit ÷ lots){% if report.year and not report.all_years %} · {{ report.year }}{% endif %}</p>
+    <div class="bar-chart" role="img" aria-label="Average lot profit by month">
+      {% for bar in report.charts.avg_lot.bars %}
+      <div class="bar-col {% if bar.highlight %}is-on{% endif %} {% if bar.negative %}is-down{% endif %}" title="{{ bar.label }}: {{ money(bar.value_cents) }} · {{ bar.lot_count }} lot{{ 's' if bar.lot_count != 1 else '' }}">
+        <span class="bar-value">{{ money(bar.value_cents) }}</span>
+        <span class="bar-fill" style="height: {{ bar.height }}%"></span>
+        <span class="bar-label">{{ bar.label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </article>
+</section>
+{% endif %}
 
 <section class="panel">
   <h2>What to change</h2>
@@ -163,9 +199,6 @@
     <h2>{{ report.bucket_heading }}</h2>
   </div>
   {% if report.scope == 'month' %}
-  {% if report.thin_count %}
-  <p class="lede">Highlighted rows spent at least a quarter of the sale on shipping.</p>
-  {% endif %}
   <div class="table-scroll wide">
   <table>
     <thead>
@@ -182,7 +215,7 @@
     </thead>
     <tbody>
       {% for order in report.orders %}
-      <tr class="{% if order.thin %}is-thin{% endif %}">
+      <tr>
         <td>
           <a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a>
           <small>{{ order.platform }}</small>
@@ -270,48 +303,6 @@
   </div>
   {% endif %}
 </section>
-
-{% if report.watch_shipping %}
-<section class="panel">
-  <h2>Shipping takes a quarter or more</h2>
-  {% if report.watch_shipping_more %}
-  <p class="lede">Showing {{ report.watch_shipping|length }}. {{ report.watch_shipping_more }} more are in the month views.</p>
-  {% endif %}
-  <div class="table-scroll wide">
-  <table>
-    <thead>
-      <tr>
-        <th>Order</th>
-        <th>Date</th>
-        <th>Sales</th>
-        <th>Shipping</th>
-        <th>Packing</th>
-        <th>Labor</th>
-        <th>Fees</th>
-        <th>Profit</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for order in report.watch_shipping %}
-      <tr>
-        <td>
-          <a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a>
-          <small>{{ order.platform }}</small>
-        </td>
-        <td>{{ order.sold_on }}</td>
-        <td>{{ money(order.sales_cents) }}</td>
-        <td>{{ money(order.shipping_cents) }}<small>{{ pct(order.ship_share) }}</small></td>
-        <td>{{ money(order.packing_cents) }}</td>
-        <td>{{ money(order.packing_labor_cents) }}</td>
-        <td>{{ money(order.fee_cents) }}</td>
-        <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  </div>
-</section>
-{% endif %}
 
 {% if report.watch_losses %}
 <section class="panel">

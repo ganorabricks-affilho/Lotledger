@@ -3,21 +3,33 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Lotledger{% endblock %}</title>
+  <title>{% block title %}Ganorabricks{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="{{ url_for('dashboard') }}">Lotledger</a>
-    <nav>
-      <a href="{{ url_for('dashboard') }}">P&amp;L</a>
-      <a href="{{ url_for('lots') }}">Lots</a>
-      <a href="{{ url_for('lot_price_sync') }}">Price sync</a>
-      <a href="{{ url_for('sales') }}">Sales</a>
-      <a href="{{ url_for('sales_profit') }}">Profit</a>
-      <a href="{{ url_for('settings') }}">Settings</a>
-      <a href="{{ url_for('brickowl_lab') }}">BrickOwl lab</a>
-      <a href="{{ url_for('bricklink_lab') }}">BrickLink lab</a>
+    <a class="brand" href="{{ url_for('home') }}">Ganorabricks</a>
+    <nav class="site-nav">
+      <div class="nav-group {{ 'is-here' if nav_section == 'lotledger' else '' }}">
+        <a class="nav-label" href="{{ url_for('dashboard') }}">Lotledger</a>
+        <a class="{{ 'is-here' if request.endpoint == 'dashboard' else '' }}" href="{{ url_for('dashboard') }}">P&amp;L</a>
+        <a class="{{ 'is-here' if request.endpoint in ['lots', 'lot_detail', 'lot_edit'] else '' }}" href="{{ url_for('lots') }}">Lots</a>
+        <a class="{{ 'is-here' if request.endpoint == 'lot_price_sync' else '' }}" href="{{ url_for('lot_price_sync') }}">Price sync</a>
+        <a class="{{ 'is-here' if request.endpoint in ['sales', 'order_detail'] else '' }}" href="{{ url_for('sales') }}">Sales</a>
+        <a class="{{ 'is-here' if request.endpoint == 'sales_profit' else '' }}" href="{{ url_for('sales_profit') }}">Profit</a>
+      </div>
+      <div class="nav-group {{ 'is-here' if nav_section == 'inventory' else '' }}">
+        <a class="nav-label {{ 'is-here' if request.endpoint in ['inventory', 'inventory_detail'] else '' }}" href="{{ url_for('inventory') }}">Inventory</a>
+      </div>
+      <div class="nav-group {{ 'is-here' if nav_section == 'expenses' else '' }}">
+        <a class="nav-label {{ 'is-here' if request.endpoint == 'expenses' else '' }}" href="{{ url_for('expenses') }}">Expenses</a>
+      </div>
+      <div class="nav-group {{ 'is-here' if nav_section == 'setup' else '' }}">
+        <span class="nav-label">Setup</span>
+        <a class="{{ 'is-here' if request.endpoint == 'settings' else '' }}" href="{{ url_for('settings') }}">Settings</a>
+        <a class="{{ 'is-here' if request.endpoint == 'brickowl_lab' else '' }}" href="{{ url_for('brickowl_lab') }}">BrickOwl lab</a>
+        <a class="{{ 'is-here' if request.endpoint == 'bricklink_lab' else '' }}" href="{{ url_for('bricklink_lab') }}">BrickLink lab</a>
+      </div>
     </nav>
   </header>
   <main>

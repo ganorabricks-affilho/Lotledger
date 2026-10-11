@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 data/*.db
 data/*.db-journal
+data/price_sync_preview.json
 data/uploads/
 .DS_Store
