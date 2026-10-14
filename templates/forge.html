@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Buildable · Minifig Forge · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page">
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Minifig Forge</p>
+      <h1>Buildable minifigures</h1>
+      <p class="lede">Each figure is checked on its own against the parts in Inventory. The number you can build is set by the scarcest part. One loose part can qualify more than one figure. New and used quantities are added together. The list runs from the highest BrickLink price: the average paid for a used figure over the last 6 months. Parts listed is your price for one figure, after any sale, using the lowest price when a part is listed more than once. That total against the figure price is the profit or loss of building it.</p>
+    </div>
+  </div>
+
+  {% if error %}
+  <p class="empty">{{ error }}</p>
+  {% else %}
+  <div class="stats compact forge-stats">
+    <article>
+      <span>You can build</span>
+      <strong>{{ '{:,}'.format(result.buildable_total) }}</strong>
+      <em>{% if filters.q %}of the figures matching “{{ filters.q }}”{% else %}complete figures{% endif %}</em>
+    </article>
+    <article>
+      <span>Highest avg sold</span>
+      <strong>{% if result.top_price_milli is not none %}{{ money3(result.top_price_milli) }}{% else %}—{% endif %}</strong>
+      <em>{% if result.top_fig_id %}{{ result.top_fig_id }} · used{% else %}used, last 6 months{% endif %}</em>
+    </article>
+    <article>
+      <span>Most of one figure</span>
+      <strong>{{ '{:,}'.format(result.best) }}</strong>
+      <em>limited by its scarcest part</em>
+    </article>
+    <article>
+      <span>Catalog</span>
+      <strong>{{ '{:,}'.format(result.fig_count) }}</strong>
+      <em>figures with a parts list{% if generated_at %} · {{ generated_at }}{% endif %}</em>
+    </article>
+  </div>
+
+  <form class="filters" method="get">
+    <label>Figure
+      <input name="q" value="{{ filters.q }}" placeholder="Name or BrickLink id">
+    </label>
+    <button type="submit">Search</button>
+    {% if filters.q %}
+    <a class="btn ghost" href="{{ url_for('forge') }}">Clear</a>
+    {% endif %}
+  </form>
+
+  {% if result.price_pending %}
+  <p class="lede pager-note">BrickLink prices are still loading for {{ '{:,}'.format(result.price_pending) }} figure{{ 's' if result.price_pending != 1 else '' }}. Reload to see them in order.</p>
+  {% endif %}
+  {% if rows %}
+  <p class="lede pager-note">{{ '{:,}'.format(result.total) }} figure{{ 's' if result.total != 1 else '' }}{% if result.pages > 1 %} · page {{ result.page }} of {{ result.pages }}{% endif %}</p>
+  <div class="panel">
+    <div class="table-scroll wide">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Figure</th>
+            <th class="num forge-price">Avg sold</th>
+            <th class="num forge-count">Can build</th>
+            <th>Parts</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for fig in rows %}
+          <tr>
+            <td><img class="thumb" src="{{ fig.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy"></td>
+            <td class="item">
+              <a href="{{ fig.catalog_url }}" target="_blank" rel="noreferrer">{{ fig.fig_id }}</a>
+              <small>{{ fig.name }}</small>
+            </td>
+            <td class="num forge-price">
+              {% if fig.price_milli is not none %}
+              {{ money3(fig.price_milli) }}
+              {% if fig.sales %}<small>{{ '{:,}'.format(fig.sales) }} sold</small>{% endif %}
+              {% else %}
+              —
+              {% endif %}
+            </td>
+            <td class="num forge-count">{{ '{:,}'.format(fig.can_build) }}</td>
+            <td>
+              <ul class="forge-recipe">
+                {% for part in fig.parts %}
+                <li class="{{ 'is-limit' if part.is_limit else '' }}">
+                  {{ part.need }} × <a href="{{ url_for('inventory', q=part.item_no) }}">{{ part.item_no }}</a>
+                  {{ part.color_name }}
+                  · {{ '{:,}'.format(part.have) }} on hand
+                  {% if part.places %}
+                  ·
+                  {% for place in part.places %}
+                  <span class="forge-place"><a class="forge-where" href="{{ url_for('inventory', q=part.item_no, remark=place.remark) }}">{{ place.remark or "No remark" }}</a>{% if part.places|length > 1 %} {{ '{:,}'.format(place.qty) }}{% endif %}</span>{% if not loop.last %}, {% endif %}
+                  {% endfor %}
+                  {% endif %}
+                  {% if part.list_milli is not none %}
+                  · {% if part.need > 1 and part.list_unit_milli is not none %}{{ money3(part.list_unit_milli) }} × {{ part.need }} = {% endif %}{{ money3(part.list_milli) }}
+                  {% endif %}
+                </li>
+                {% endfor %}
+                {% if fig.parts_milli is not none %}
+                <li class="forge-math">
+                  Parts {{ money3(fig.parts_milli) }}
+                  {% if fig.profit_milli is not none %}
+                  − fig {{ money3(fig.price_milli) }}
+                  =
+                  {% if fig.profit_milli > 0 %}
+                  <span class="up">profit {{ money3(fig.profit_milli) }}</span>
+                  {% elif fig.profit_milli < 0 %}
+                  <span class="down">loss {{ money3(-fig.profit_milli) }}</span>
+                  {% else %}
+                  even
+                  {% endif %}
+                  {% endif %}
+                </li>
+                {% endif %}
+              </ul>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% if result.pages > 1 %}
+  <p class="pager">
+    {% if result.page > 1 %}
+    <a href="{{ url_for('forge', q=filters.q, page=result.page - 1) }}">Previous</a>
+    {% endif %}
+    <span>Page {{ result.page }} of {{ result.pages }}</span>
+    {% if result.page < result.pages %}
+    <a href="{{ url_for('forge', q=filters.q, page=result.page + 1) }}">Next</a>
+    {% endif %}
+  </p>
+  {% endif %}
+  {% elif filters.q %}
+  <p class="empty">No minifigure in the catalog matches “{{ filters.q }}”.</p>
+  {% else %}
+  <p class="empty">No complete minifigure matches the parts on hand.</p>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

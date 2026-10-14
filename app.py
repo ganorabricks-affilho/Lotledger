@@ -1,4 +1,8 @@
 import calendar
+import json
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
@@ -6,6 +10,7 @@ import bricklink
 import brickowl
 import brickstore
 import database as db
+import minifig_catalog
 
 app = Flask(__name__)
 app.secret_key = "lotledger-local-dev"
@@ -18,6 +23,34 @@ SALE_FORMATS = [
     ("bricklink", "BrickLink"),
     ("brickowl", "BrickOwl"),
 ]
+FORGE_GUIDE = {"guide_type": "sold", "new_or_used": "U", "currency_code": "USD"}
+FORGE_PRICE_DAYS = 7
+_price_refresh_lock = threading.Lock()
+_price_refresh_running = False
+
+
+def _nav_section() -> str:
+    endpoint = request.endpoint or ""
+    if endpoint in {
+        "inventory",
+        "inventory_detail",
+        "inventory_duplicates",
+        "inventory_duplicates_sync",
+        "inventory_sync",
+        "inventory_sync_apply",
+        "inventory_sync_reject",
+        "inventory_storage",
+    }:
+        return "inventory"
+    if endpoint in {"forge", "forge_parts"}:
+        return "forge"
+    if endpoint == "expenses":
+        return "expenses"
+    if endpoint in {"settings", "brickowl_lab", "bricklink_lab"}:
+        return "setup"
+    if endpoint == "home":
+        return "home"
+    return "lotledger"
 
 
 @app.context_processor
@@ -33,10 +66,16 @@ def inject_helpers():
         "conditions": brickstore.CONDITIONS,
         "has_brickowl_key": bool(db.get_setting("brickowl_api_key")),
         "has_bricklink_creds": db.has_bricklink_creds(),
+        "nav_section": _nav_section(),
     }
 
 
 @app.route("/")
+def home():
+    return render_template("home.html", counts=db.home_counts())
+
+
+@app.route("/pnl")
 def dashboard():
     return render_template("dashboard.html", summary=db.summary())
 
@@ -215,21 +254,21 @@ def lot_delete(lot_id):
 
 @app.route("/lots/price-sync", methods=["GET", "POST"])
 def lot_price_sync():
-    preview = session.get("price_sync_preview")
+    preview = db.load_price_sync_preview()
     if request.method == "POST":
         action = request.form.get("action") or "preview"
         if action == "reject":
-            session.pop("price_sync_preview", None)
+            db.clear_price_sync_preview()
             flash("Price sync cancelled. Nothing was changed.")
             return redirect(url_for("lot_price_sync"))
         if action == "apply":
-            pending = session.get("price_sync_preview")
+            pending = db.load_price_sync_preview()
             if not pending or not pending.get("changes"):
-                session.pop("price_sync_preview", None)
+                db.clear_price_sync_preview()
                 flash("No pending price changes to apply.")
                 return redirect(url_for("lot_price_sync"))
             updated = db.apply_listing_price_updates(pending["changes"])
-            session.pop("price_sync_preview", None)
+            db.clear_price_sync_preview()
             flash(f"Updated unit prices on {updated} listing row{'s' if updated != 1 else ''}.")
             return redirect(url_for("lots"))
         # preview
@@ -244,7 +283,7 @@ def lot_price_sync():
             flash(str(exc))
             return redirect(url_for("lot_price_sync"))
         preview = db.preview_listing_price_updates(prices)
-        session["price_sync_preview"] = preview
+        db.save_price_sync_preview(preview)
         if preview["change_count"] == 0:
             flash(
                 f"Checked {preview['matched']} listing rows against BrickLink. "
@@ -289,6 +328,8 @@ def _orders_by_month(orders):
             index[key] = group
             groups.append(group)
         group["orders"].append(order)
+        if order.get("is_cancelled"):
+            continue
         group["qty"] += int(order.get("display_qty") or 0)
         group["lots"] += int(order.get("display_lots") or 0)
         group["items_cents"] += int(order.get("items_cents") or 0)
@@ -312,11 +353,14 @@ def sales_profit():
 @app.route("/sales")
 def sales():
     orders = db.list_orders()
+    status_periods = db.order_status_periods()
     return render_template(
         "sales.html",
         orders=orders,
         month_groups=_orders_by_month(orders),
         import_limit=10,
+        status_years=status_periods["years"],
+        status_periods=status_periods["periods"],
     )
 
 
@@ -329,6 +373,31 @@ def sales_match():
         f" · {result['already_matched']} already processed"
         f" · {result['unmatched_with_id']} with BL lot ID still unmatched."
     )
+    return redirect(url_for("sales"))
+
+
+@app.route("/sales/refresh-status", methods=["POST"])
+def sales_refresh_status():
+    raw_year = (request.form.get("year") or "").strip()
+    raw_month = (request.form.get("month") or "").strip()
+    year = int(raw_year) if raw_year.isdigit() else None
+    month = int(raw_month) if raw_month.isdigit() else None
+    try:
+        result = db.refresh_order_statuses(year=year, month=month)
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("sales"))
+    msg = (
+        f"{result['period_label']}: checked {result['checked']} of {result['order_count']} order"
+        f"{'s' if result['order_count'] != 1 else ''}"
+        f" · updated {result['updated']}"
+        f" · {result['unchanged']} unchanged"
+    )
+    if result.get("skipped"):
+        msg += f" · {result['skipped']} skipped (BO Received / BL Completed)"
+    if result["errors"]:
+        msg += f" · {len(result['errors'])} failed"
+    flash(msg)
     return redirect(url_for("sales"))
 
 
@@ -540,6 +609,434 @@ def bricklink_try():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(result)
+
+
+INVENTORY_PAGE_SIZE = 100
+INVENTORY_STOCKS = (
+    ("", "Any location"),
+    ("for_sale", "For sale"),
+    ("retain", "Retain"),
+)
+
+
+def _present_inventory(item: dict) -> dict:
+    row = dict(item)
+    sale_rate = max(0, min(100, int(row.get("sale_rate") or 0)))
+    unit = int(row.get("unit_price_milli") or 0)
+    row["sale_rate"] = sale_rate
+    row["effective_milli"] = int(round(unit * (100 - sale_rate) / 100))
+    item_type = row.get("item_type") or ""
+    row["type_label"] = bricklink.ITEM_TYPE_LABELS.get(item_type, item_type)
+    condition = (row.get("new_or_used") or "").upper()
+    row["condition_label"] = {"N": "New", "U": "Used"}.get(condition, condition)
+    completeness = row.get("completeness") or ""
+    row["completeness_label"] = bricklink.COMPLETENESS_LABELS.get(completeness, completeness)
+    if row.get("is_retain"):
+        where = "Retain"
+    elif row.get("is_stock_room"):
+        where = f"Stockroom {row.get('stock_room_id') or ''}".strip()
+    else:
+        where = "For sale"
+    row["where_label"] = where
+    row.update(db.inventory_age(row.get("date_created") or ""))
+    row["catalog_url"] = bricklink.catalog_url(item_type, row.get("item_no") or "")
+    bl_id = row.get("bl_inventory_id") or ""
+    row["bricklink_url"] = (
+        f"https://www.bricklink.com/inventory_detail.asp?invID={bl_id}" if bl_id else ""
+    )
+    return row
+
+
+def _inventory_filters() -> dict:
+    condition = (request.args.get("condition") or "").strip().upper()
+    if condition not in {"", "N", "U"}:
+        condition = ""
+    stock = (request.args.get("stock") or "").strip()
+    if stock not in {key for key, _label in INVENTORY_STOCKS}:
+        stock = ""
+    try:
+        page = int(request.args.get("page") or 1)
+    except ValueError:
+        page = 1
+    sort = (request.args.get("sort") or "age").strip()
+    direction = (request.args.get("dir") or "").strip().lower()
+    if sort == "oldest":
+        sort, direction = "age", "asc"
+    elif sort == "newest":
+        sort, direction = "age", "desc"
+    elif sort == "item" and direction not in {"asc", "desc"}:
+        direction = "asc"
+    if sort not in db.INVENTORY_SORTS:
+        sort = "age"
+    if direction not in {"asc", "desc"}:
+        direction = "asc"
+    remark = request.args.get("remark")
+    if remark is not None:
+        remark = remark.strip()
+    return {
+        "q": (request.args.get("q") or "").strip(),
+        "item_type": (request.args.get("item_type") or "").strip(),
+        "condition": condition,
+        "stock": stock,
+        "remark": remark,
+        "sort": sort,
+        "dir": direction,
+        "page": max(1, page),
+    }
+
+
+@app.route("/inventory")
+def inventory():
+    filters = _inventory_filters()
+    result = db.list_store_inventory(
+        q=filters["q"],
+        item_type=filters["item_type"],
+        condition=filters["condition"],
+        stock=filters["stock"],
+        remark=filters["remark"],
+        sort=filters["sort"],
+        direction=filters["dir"],
+        page=filters["page"],
+        limit=INVENTORY_PAGE_SIZE,
+    )
+    filters["page"] = result["page"]
+    return render_template(
+        "inventory.html",
+        items=[_present_inventory(row) for row in result["rows"]],
+        result=result,
+        filters=filters,
+        stocks=INVENTORY_STOCKS,
+        summary=db.inventory_summary(),
+        type_labels=bricklink.ITEM_TYPE_LABELS,
+        filters_active=any(
+            filters[key] for key in ("q", "item_type", "condition", "stock")
+        )
+        or filters["remark"] is not None,
+        pending_sync=db.pending_inventory_sync(),
+    )
+
+
+@app.route("/inventory/storage")
+def inventory_storage():
+    sort = (request.args.get("sort") or "remark").strip()
+    direction = (request.args.get("dir") or "asc").strip().lower()
+    if sort not in db.STORAGE_SORTS:
+        sort = "remark"
+    if direction not in {"asc", "desc"}:
+        direction = "asc"
+    q = (request.args.get("q") or "").strip()
+    result = db.list_inventory_storage(q=q, sort=sort, direction=direction)
+    return render_template(
+        "inventory_storage.html",
+        result=result,
+        filters={"q": q, "sort": sort, "dir": direction},
+    )
+
+
+@app.route("/inventory/duplicates")
+def inventory_duplicates():
+    price = (request.args.get("price") or "differs").strip()
+    if price not in {"differs", "same", "all"}:
+        price = "differs"
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except ValueError:
+        page = 1
+    q = (request.args.get("q") or "").strip()
+    result = db.list_inventory_duplicates(q=q, price=price, page=page, limit=30)
+    groups = []
+    for group in result["groups"]:
+        shown = dict(group)
+        shown["lots"] = [_present_inventory(lot) for lot in group["lots"]]
+        shown["raise_count"] = sum(
+            1
+            for lot in shown["lots"]
+            if int(lot.get("unit_price_milli") or 0) < int(group.get("max_milli") or 0)
+        )
+        condition = (group.get("new_or_used") or "").upper()
+        shown["condition_label"] = {"N": "New", "U": "Used"}.get(condition, condition or "Any condition")
+        item_type = group.get("item_type") or ""
+        shown["type_label"] = bricklink.ITEM_TYPE_LABELS.get(item_type, item_type)
+        groups.append(shown)
+    return render_template(
+        "inventory_duplicates.html",
+        groups=groups,
+        result=result,
+        summary=db.inventory_duplicate_summary(),
+        filters={"q": q, "price": price, "page": result["page"]},
+    )
+
+
+def _duplicate_return_args():
+    price = (request.form.get("price") or "differs").strip()
+    if price not in {"differs", "same", "all"}:
+        price = "differs"
+    try:
+        page = max(1, int(request.form.get("page") or 1))
+    except ValueError:
+        page = 1
+    return {
+        "q": (request.form.get("q") or "").strip(),
+        "price": price,
+        "page": page,
+    }
+
+
+@app.route("/inventory/duplicates/sync", methods=["POST"])
+def inventory_duplicates_sync():
+    back = _duplicate_return_args()
+    scope = (request.form.get("scope") or "").strip()
+    if scope == "group":
+        updates = db.duplicate_price_updates(
+            item_no=request.form.get("item_no") or "",
+            color_id=request.form.get("color_id") or "",
+            new_or_used=(request.form.get("new_or_used") or "").upper(),
+            description=request.form.get("description") if request.form.get("description") is not None else "",
+            matched_group=True,
+        )
+    elif scope == "all":
+        updates = db.duplicate_price_updates()
+    else:
+        flash("Unknown price update.")
+        return redirect(url_for("inventory_duplicates", **back))
+    if not updates:
+        flash("Those lots are already at the highest price.")
+        return redirect(url_for("inventory_duplicates", **back))
+    try:
+        creds = bricklink.creds_from_settings(db.get_setting)
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("inventory_duplicates", **back))
+    updated = 0
+    failed = []
+    for index, row in enumerate(updates):
+        if index:
+            time.sleep(0.2)
+        try:
+            bricklink.update_inventory_price(creds, row["bl_inventory_id"], row["target_price"])
+            db.set_store_inventory_price(
+                row["bl_inventory_id"], row["target_price"], row["target_milli"]
+            )
+            updated += 1
+        except ValueError as exc:
+            failed.append(f"{row['bl_inventory_id']}: {exc}")
+    if updated and not failed:
+        flash(f"Updated {updated} BrickLink lot{'s' if updated != 1 else ''} to the highest price in the group.")
+    elif updated:
+        flash(
+            f"Updated {updated} lot{'s' if updated != 1 else ''}. "
+            f"{len(failed)} failed, starting with {failed[0]}"
+        )
+    else:
+        flash(f"BrickLink did not update those lots. {failed[0]}")
+    return redirect(url_for("inventory_duplicates", **back))
+
+
+@app.route("/inventory/sync", methods=["GET", "POST"])
+def inventory_sync():
+    if request.method == "POST":
+        try:
+            creds = bricklink.creds_from_settings(db.get_setting)
+            rows = bricklink.fetch_inventory_snapshot(creds)
+            result = db.stage_inventory_snapshot(rows)
+        except ValueError as exc:
+            flash(str(exc))
+            return redirect(url_for("inventory"))
+        if result["replaced_pending"]:
+            flash("Replaced the previous sync that was still waiting for review.")
+        return redirect(url_for("inventory_sync"))
+    report = db.inventory_sync_report()
+    if report is None:
+        flash("Fetch a BrickLink sync before reviewing changes.")
+        return redirect(url_for("inventory"))
+    return render_template("inventory_sync.html", report=report)
+
+
+@app.route("/inventory/sync/apply", methods=["POST"])
+def inventory_sync_apply():
+    try:
+        result = db.apply_inventory_sync()
+    except ValueError as exc:
+        flash(str(exc))
+        return redirect(url_for("inventory"))
+    if result["added"] or result["updated"] or result["removed"]:
+        flash(
+            f"Synced BrickLink inventory. {result['added']} added, "
+            f"{result['updated']} updated, {result['removed']} removed. "
+            f"{result['unchanged']} unchanged."
+        )
+    else:
+        flash("Synced. BrickLink already matches this inventory.")
+    return redirect(url_for("inventory"))
+
+
+@app.route("/inventory/sync/reject", methods=["POST"])
+def inventory_sync_reject():
+    if db.discard_inventory_sync():
+        flash("Sync discarded. The local inventory was not changed.")
+    else:
+        flash("There was no sync waiting for review.")
+    return redirect(url_for("inventory"))
+
+
+@app.route("/inventory/<bl_inventory_id>")
+def inventory_detail(bl_inventory_id):
+    item = db.get_store_inventory(bl_inventory_id)
+    if item is None:
+        flash("That BrickLink inventory lot is not in the local snapshot.")
+        return redirect(url_for("inventory"))
+    try:
+        pretty_json = json.dumps(json.loads(item.get("api_json") or "{}"), indent=2, ensure_ascii=False)
+    except json.JSONDecodeError:
+        pretty_json = item.get("api_json") or ""
+    return render_template(
+        "inventory_detail.html",
+        item=_present_inventory(item),
+        pretty_json=pretty_json,
+    )
+
+
+def _price_fetched_at(value: str):
+    text = str(value or "").strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _forge_prices_due(fig_ids, prices: dict) -> list:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=FORGE_PRICE_DAYS)
+    due = []
+    for fig_id in fig_ids:
+        info = prices.get(fig_id)
+        if info is None:
+            due.append(fig_id)
+            continue
+        fetched = _price_fetched_at(info.get("fetched_at"))
+        if fetched is None or fetched < cutoff:
+            due.append(fig_id)
+    return due
+
+
+def refresh_forge_prices(fig_ids, force: bool = False) -> int:
+    """Fill the local price cache from BrickLink. Returns how many guides were fetched."""
+    wanted = list(dict.fromkeys(fig_ids))
+    prices = db.load_minifig_prices(**FORGE_GUIDE)
+    due = wanted if force else _forge_prices_due(wanted, prices)
+    if not due:
+        return 0
+    creds = bricklink.creds_from_settings(db.get_setting)
+    print(f"forge prices fetching {len(due)}", flush=True)
+    fresh_after = datetime.now(timezone.utc) - timedelta(days=FORGE_PRICE_DAYS)
+    fetched = 0
+    for index, fig_id in enumerate(due, 1):
+        if not force:
+            stamp = _price_fetched_at(db.minifig_price_fetched_at(fig_id, **FORGE_GUIDE))
+            if stamp is not None and stamp >= fresh_after:
+                continue
+        delay = 1.0
+        guide = None
+        for attempt in range(5):
+            try:
+                guide = bricklink.item_price_guide(creds, fig_id, item_type="MINIFIG", **FORGE_GUIDE)
+                break
+            except bricklink.BrickLinkThrottle:
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+            except ValueError as exc:
+                text = str(exc)
+                if any(code in text for code in ("HTTP 400", "HTTP 403", "HTTP 404")):
+                    print(f"forge price skipped {fig_id}: {text}", flush=True)
+                    guide = None
+                    break
+                if attempt == 4:
+                    print(f"forge price skipped {fig_id}: {text}", flush=True)
+                    guide = None
+                    break
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+        if guide is None:
+            time.sleep(0.2)
+            continue
+        db.save_minifig_price(
+            {
+                "fig_id": fig_id,
+                "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                **guide,
+            }
+        )
+        fetched += 1
+        if index % 25 == 0 or index == len(due):
+            price = guide.get("qty_avg_price_milli")
+            shown = f"${price / 1000:.2f}" if price is not None else "no sales"
+            print(f"forge prices {index}/{len(due)} {fig_id} {shown}", flush=True)
+        time.sleep(0.2)
+    return fetched
+
+
+def _start_forge_price_refresh(fig_ids) -> None:
+    global _price_refresh_running
+    if not fig_ids or not db.has_bricklink_creds():
+        return
+    with _price_refresh_lock:
+        if _price_refresh_running:
+            return
+        _price_refresh_running = True
+
+    def work():
+        global _price_refresh_running
+        try:
+            refresh_forge_prices(fig_ids)
+        except Exception as exc:
+            print(f"forge price refresh failed: {exc}", flush=True)
+        finally:
+            with _price_refresh_lock:
+                _price_refresh_running = False
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+@app.route("/forge")
+def forge():
+    q = (request.args.get("q") or "").strip()
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except ValueError:
+        page = 1
+    try:
+        catalog = minifig_catalog.load()
+        prices = db.load_minifig_prices(**FORGE_GUIDE)
+        result = minifig_catalog.buildable_figures(
+            catalog,
+            db.inventory_part_quantities(),
+            q=q,
+            page=page,
+            prices=prices,
+            places=db.inventory_part_places(),
+            listed=db.inventory_part_prices(),
+        )
+    except minifig_catalog.CatalogError as exc:
+        return render_template("forge.html", error=str(exc), filters={"q": q})
+    _start_forge_price_refresh(_forge_prices_due(result["buildable_ids"], prices))
+    generated = catalog["generated_at"]
+    return render_template(
+        "forge.html",
+        error=None,
+        rows=result["rows"],
+        result=result,
+        filters={"q": q, "page": result["page"]},
+        generated_at=generated.strftime("%b %-d, %Y") if generated else "",
+    )
+
+
+@app.route("/forge/parts")
+def forge_parts():
+    return render_template("forge_parts.html")
+
+
+@app.route("/expenses")
+def expenses():
+    return render_template("expenses.html")
 
 
 def _lot_from_form():

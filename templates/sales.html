@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Sales · Lotledger{% endblock %}
+{% block title %}Sales · Ganorabricks{% endblock %}
 {% block content %}
 <h1>Sales</h1>
 <p class="lede">Import store orders from BrickOwl or BrickLink. Duplicates (same order ID) are skipped.</p>
@@ -40,6 +40,30 @@
       <button type="submit" id="sales-match-btn">Match sales to lots</button>
       <p class="import-status" id="sales-match-status" hidden>Matching sales to lots… this can take a bit.</p>
     </form>
+
+    <form class="panel form" id="sales-refresh-status" method="post" action="{{ url_for('sales_refresh_status') }}">
+      <h2>Refresh status</h2>
+      <p class="lede">Re-check BrickLink and BrickOwl for orders in a period. Skips BrickOwl Received and BrickLink Completed. Shipping, packing, and matches stay as they are.</p>
+      <div class="row">
+        <label>Year
+          <select name="year" id="sales-refresh-year" required>
+            {% for y in status_years %}
+            <option value="{{ y }}" {% if loop.first %}selected{% endif %}>{{ y }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Month
+          <select name="month" id="sales-refresh-month">
+            <option value="">Full year</option>
+            {% for period in status_periods %}
+            <option value="{{ period.month }}" data-year="{{ period.year }}">{{ period.label.split(' ')[0] }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <button type="submit" id="sales-refresh-status-btn">Refresh order status</button>
+      <p class="import-status" id="sales-refresh-status-status" hidden>Refreshing order status… this can take a bit.</p>
+    </form>
   </div>
 
   <div class="panel sales-orders">
@@ -49,15 +73,16 @@
     <table>
       <thead>
         <tr>
+          <th class="ext-col"></th>
           <th>ID</th>
           <th>Src</th>
           <th>Date</th>
+          <th>Status</th>
           <th>Payment</th>
           <th>Quantity</th>
           <th>Lots</th>
           <th>Total</th>
           <th>Shipping</th>
-          <th>Packing</th>
           <th>Labor</th>
           <th>Net gain</th>
           <th></th>
@@ -66,29 +91,35 @@
       <tbody>
         {% for group in month_groups %}
         <tr class="month-group">
-          <td colspan="4">{{ group.label }}<small>{{ group.orders|length }} order{{ 's' if group.orders|length != 1 else '' }}</small></td>
+          <td colspan="6">{{ group.label }}<small>{{ group.orders|length }} order{{ 's' if group.orders|length != 1 else '' }}</small></td>
           <td>{{ group.qty }}</td>
           <td>{{ group.lots }}</td>
           <td>{{ money(group.items_cents) }}</td>
           <td>{{ money(group.shipping_cents) }}</td>
-          <td>{{ money(group.packing_cents) }}</td>
           <td>{{ money(group.packing_labor_cents) }}</td>
           <td class="{{ 'up' if group.net_cents >= 0 else 'down' }}">{{ money(group.net_cents) }}</td>
           <td></td>
         </tr>
         {% for order in group.orders %}
-        <tr>
+        <tr class="{{ 'is-cancelled' if order.is_cancelled else '' }}">
+          <td class="ext-col">
+            {% if order.is_bricklink %}
+            <a class="ext-link" href="https://www.bricklink.com/orderDetail.asp?ID={{ order.order_number }}" target="_blank" rel="noreferrer" title="Open on BrickLink">↗</a>
+            {% else %}
+            <a class="ext-link" href="https://www.brickowl.com/mystore/orders/history/{{ order.order_number }}" target="_blank" rel="noreferrer" title="Open on BrickOwl">↗</a>
+            {% endif %}
+          </td>
           <td><a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a></td>
           <td>{{ 'BL' if order.is_bricklink else 'BO' }}</td>
           <td>{{ order.sold_on }}</td>
+          <td>{{ order.status or '—' }}</td>
           <td>{{ order.payment_method or '—' }}</td>
-          <td>{{ order.display_qty }}</td>
-          <td>{{ order.display_lots }}</td>
-          <td>{{ money(order.items_cents) }}</td>
-          <td>{{ money(order.shipping_cents) }}</td>
-          <td>{{ money(order.packing_cents) }}</td>
-          <td>{{ money(order.packing_labor_cents) }}</td>
-          <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{{ money(order.net_cents) }}</td>
+          <td>{% if order.is_cancelled %}—{% else %}{{ order.display_qty }}{% endif %}</td>
+          <td>{% if order.is_cancelled %}—{% else %}{{ order.display_lots }}{% endif %}</td>
+          <td>{% if order.is_cancelled %}—{% else %}{{ money(order.items_cents) }}{% endif %}</td>
+          <td>{% if order.is_cancelled %}—{% else %}{{ money(order.shipping_cents) }}{% endif %}</td>
+          <td>{% if order.is_cancelled %}—{% else %}{{ money(order.packing_labor_cents) }}{% endif %}</td>
+          <td class="{{ 'up' if order.net_cents >= 0 else 'down' }}">{% if order.is_cancelled %}—{% else %}{{ money(order.net_cents) }}{% endif %}</td>
           <td>
             <form class="inline" method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete order {{ order.order_number }}? You can reimport it later.')">
               <button class="linkish" type="submit">Delete</button>
@@ -121,5 +152,34 @@
   wireBusy("brickowl-import", "brickowl-import-btn", "brickowl-import-status", "Importing…");
   wireBusy("bricklink-import", "bricklink-import-btn", "bricklink-import-status", "Importing…");
   wireBusy("sales-match", "sales-match-btn", "sales-match-status", "Matching…");
+  wireBusy("sales-refresh-status", "sales-refresh-status-btn", "sales-refresh-status-status", "Refreshing…");
+
+  (() => {
+    const yearSel = document.getElementById("sales-refresh-year");
+    const monthSel = document.getElementById("sales-refresh-month");
+    if (!yearSel || !monthSel) return;
+    const syncMonths = () => {
+      const year = yearSel.value;
+      let firstVisible = null;
+      Array.from(monthSel.options).forEach((opt) => {
+        if (!opt.value) {
+          opt.hidden = false;
+          return;
+        }
+        const show = opt.dataset.year === year;
+        opt.hidden = !show;
+        if (show && firstVisible === null) firstVisible = opt.value;
+      });
+      const selected = monthSel.selectedOptions[0];
+      if (selected && selected.hidden) {
+        monthSel.value = firstVisible || "";
+      }
+    };
+    yearSel.addEventListener("change", syncMonths);
+    syncMonths();
+    // Default to newest month for the selected year.
+    const newest = Array.from(monthSel.options).find((opt) => opt.value && !opt.hidden);
+    if (newest) monthSel.value = newest.value;
+  })();
 </script>
 {% endblock %}

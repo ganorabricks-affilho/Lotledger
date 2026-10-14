@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Inventory · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page">
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Inventory</p>
+      <h1>BrickLink store</h1>
+      <p class="lede">A local copy of your BrickLink listings. Sync fetches a fresh copy, shows what would change, and updates this snapshot only after you approve. Lots and sales are left alone.</p>
+    </div>
+    <div class="hero-actions">
+      {% if has_bricklink_creds %}
+      <form class="sync-form" method="post" action="{{ url_for('inventory_sync') }}"{% if pending_sync %} data-confirm="A sync is already waiting for review. Fetch again and replace that report?"{% endif %}>
+        <button type="submit">Sync from BrickLink</button>
+        <p class="import-status" hidden>Fetching BrickLink inventory… this can take a minute.</p>
+      </form>
+      {% else %}
+      <a class="btn" href="{{ url_for('settings') }}">Add BrickLink credentials</a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if pending_sync %}
+  <p class="lede">A sync from {{ pending_sync.fetched_at }} is waiting. <a href="{{ url_for('inventory_sync') }}">Review {{ '{:,}'.format(pending_sync.row_count) }} BrickLink lots</a> before anything is written.</p>
+  {% endif %}
+
+  <div class="stats compact">
+    <article>
+      <span>Listings</span>
+      <strong>{{ '{:,}'.format(summary.listings) }}</strong>
+      <em>{{ '{:,}'.format(summary.for_sale_listings) }} for sale</em>
+    </article>
+    <article>
+      <span>Pieces</span>
+      <strong>{{ '{:,}'.format(summary.qty) }}</strong>
+      <em>quantity on the snapshot</em>
+    </article>
+    <article>
+      <span>For-sale value</span>
+      <strong>{{ money3(summary.for_sale_milli) }}</strong>
+      <em>{% if summary.latest %}synced {{ summary.latest.imported_at }}{% else %}not synced yet{% endif %}</em>
+    </article>
+  </div>
+
+  <form class="filters" method="get">
+    <label>Search
+      <input name="q" value="{{ filters.q }}" placeholder="Item, color, remarks, lot id">
+    </label>
+    <label>Type
+      <select name="item_type">
+        <option value="">Any type</option>
+        {% for item_type in result.types %}
+        <option value="{{ item_type }}" {{ 'selected' if filters.item_type == item_type else '' }}>{{ type_labels.get(item_type, item_type) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Condition
+      <select name="condition">
+        <option value="">Any condition</option>
+        <option value="N" {{ 'selected' if filters.condition == 'N' else '' }}>New</option>
+        <option value="U" {{ 'selected' if filters.condition == 'U' else '' }}>Used</option>
+      </select>
+    </label>
+    <input type="hidden" name="sort" value="{{ filters.sort }}">
+    <input type="hidden" name="dir" value="{{ filters.dir }}">
+    {% if filters.remark is not none %}
+    <input type="hidden" name="remark" value="{{ filters.remark }}">
+    {% endif %}
+    <button type="submit">Filter</button>
+    {% if filters_active %}
+    <a class="btn ghost" href="{{ url_for('inventory') }}">Clear</a>
+    {% endif %}
+  </form>
+
+  {% if items %}
+  <p class="lede pager-note">{{ '{:,}'.format(result.total) }} listing{{ 's' if result.total != 1 else '' }}{% if filters.remark is not none %} in {{ filters.remark or 'no remark' }}{% elif filters_active %} match{% endif %}{% if result.pages > 1 %} · page {{ result.page }} of {{ result.pages }}{% endif %}</p>
+  <div class="panel">
+    <div class="table-scroll wide">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            {% for key, label in [('item', 'Item'), ('color', 'Color'), ('cond', 'Cond'), ('qty', 'Qty'), ('price', 'Price'), ('age', 'Age'), ('remarks', 'Remarks')] %}
+            {% set next_dir = 'desc' if filters.sort == key and filters.dir == 'asc' else 'asc' %}
+            <th class="{{ 'is-sorted' if filters.sort == key else '' }}"{% if filters.sort == key %} aria-sort="{{ 'ascending' if filters.dir == 'asc' else 'descending' }}"{% endif %}>
+              <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, sort=key, dir=next_dir) }}">{{ label }}{% if filters.sort == key %} {{ '↑' if filters.dir == 'asc' else '↓' }}{% endif %}</a>
+            </th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in items %}
+          <tr>
+            <td>
+              {% if item.image_url %}
+              <img class="thumb" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
+              {% endif %}
+            </td>
+            <td class="item">
+              <a href="{{ url_for('inventory_detail', bl_inventory_id=item.bl_inventory_id) }}">{{ item.item_no }}</a>
+              <small>{{ item.item_name }}{% if item.type_label %} · {{ item.type_label }}{% endif %}</small>
+            </td>
+            <td>{{ item.color_name }}</td>
+            <td>{{ item.condition_label }}</td>
+            <td>{{ '{:,}'.format(item.quantity) }}</td>
+            <td>
+              {{ money3(item.effective_milli) }}
+              {% if item.sale_rate %}
+              <small>list {{ money3(item.unit_price_milli) }} · {{ item.sale_rate }}% off</small>
+              {% endif %}
+            </td>
+            <td class="age">
+              {{ item.age_label }}
+              {% if item.added_on %}<small>{{ item.added_on }}</small>{% endif %}
+            </td>
+            <td class="clip">{{ item.remarks }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% if result.pages > 1 %}
+  <p class="pager">
+    {% if result.page > 1 %}
+    <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, sort=filters.sort, dir=filters.dir, page=result.page - 1) }}">Previous</a>
+    {% endif %}
+    <span>Page {{ result.page }} of {{ result.pages }}</span>
+    {% if result.page < result.pages %}
+    <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, sort=filters.sort, dir=filters.dir, page=result.page + 1) }}">Next</a>
+    {% endif %}
+  </p>
+  {% endif %}
+  {% elif summary.listings == 0 %}
+  <p class="empty">No BrickLink inventory yet. Sync to copy the store.</p>
+  {% else %}
+  <p class="empty">No listings match those filters.</p>
+  {% endif %}
+</section>
+<script>
+  document.querySelectorAll("form.sync-form").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      const message = form.dataset.confirm;
+      if (message && !window.confirm(message)) {
+        event.preventDefault();
+        return;
+      }
+      const button = form.querySelector("button");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Fetching…";
+      }
+      const status = form.querySelector(".import-status");
+      if (status) status.hidden = false;
+      document.body.classList.add("is-busy");
+    });
+  });
+</script>
+{% endblock %}

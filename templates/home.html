@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Ganorabricks{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">Store</p>
+    <h1>Ganorabricks</h1>
+    <p class="lede">Lot profit stays in Lotledger. Store listings live in Inventory, copied from BrickLink. Minifig Forge reads those parts and will show which complete figures they can assemble.</p>
+  </div>
+</section>
+
+<div class="section-cards">
+  <a class="panel section-card" href="{{ url_for('dashboard') }}">
+    <p class="eyebrow">Lotledger</p>
+    <h2>Purchase lots and profit</h2>
+    <p>{{ counts.lot_count }} lot{{ 's' if counts.lot_count != 1 else '' }} recorded. Cost, matched sales, and profit stay on the lot.</p>
+  </a>
+  <a class="panel section-card" href="{{ url_for('inventory') }}">
+    <p class="eyebrow">Inventory</p>
+    <h2>BrickLink store snapshot</h2>
+    <p>
+      {% if counts.listings %}
+      {{ '{:,}'.format(counts.listings) }} listing{{ 's' if counts.listings != 1 else '' }} · {{ '{:,}'.format(counts.qty) }} pieces
+      {% else %}
+      Sync BrickLink into Inventory. Changes wait for approval.
+      {% endif %}
+    </p>
+  </a>
+  <a class="panel section-card" href="{{ url_for('forge') }}">
+    <p class="eyebrow">Minifig Forge</p>
+    <h2>Figures you can build</h2>
+    <p>Minifigure parts already in Inventory, and the complete figures those parts can assemble.</p>
+  </a>
+  <a class="panel section-card" href="{{ url_for('expenses') }}">
+    <p class="eyebrow">Expenses</p>
+    <h2>Costs outside the lots</h2>
+    <p>Fees, supplies, and mileage will be recorded here, separate from lot profit.</p>
+  </a>
+</div>
+{% endblock %}

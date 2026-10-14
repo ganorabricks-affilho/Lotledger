@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Sync inventory · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page">
+  <p class="crumb"><a href="{{ url_for('inventory') }}">Inventory</a> / sync</p>
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Inventory</p>
+      <h1>Review BrickLink sync</h1>
+      <p class="lede">Fetched {{ report.fetched_at }}. This copy is only in a temporary table. Approving adds missing lots, deletes lots BrickLink no longer has, and updates quantity, price, and any other field that changed. Stockroom lots are left out, so a lot that moved there shows as removed.</p>
+    </div>
+  </div>
+
+  <div class="stats compact">
+    <article>
+      <span>Add</span>
+      <strong>{{ '{:,}'.format(report.added|length) }}</strong>
+      <em>on BrickLink, not stored here</em>
+    </article>
+    <article>
+      <span>Update</span>
+      <strong>{{ '{:,}'.format(report.updated|length) }}</strong>
+      <em>{{ '{:,}'.format(report.quantity_changes) }} quantity · {{ '{:,}'.format(report.price_changes) }} price</em>
+    </article>
+    <article>
+      <span>Delete</span>
+      <strong>{{ '{:,}'.format(report.removed|length) }}</strong>
+      <em>stored here, gone from BrickLink</em>
+    </article>
+    <article>
+      <span>Unchanged</span>
+      <strong>{{ '{:,}'.format(report.unchanged) }}</strong>
+      <em>{{ '{:,}'.format(report.incoming_count) }} lots in this fetch</em>
+    </article>
+  </div>
+
+  <div class="hero-actions sync-actions">
+    <form class="sync-form" method="post" action="{{ url_for('inventory_sync_apply') }}" data-confirm="Apply this sync? {{ report.added|length }} added, {{ report.updated|length }} updated, {{ report.removed|length }} removed.">
+      <button type="submit">Approve</button>
+    </form>
+    <form class="sync-form" method="post" action="{{ url_for('inventory_sync_reject') }}" data-confirm="Reject this sync? The local inventory stays as it is.">
+      <button class="btn ghost" type="submit">Reject</button>
+    </form>
+  </div>
+
+  {% if report.updated %}
+  <section class="panel">
+    <h2>Updates</h2>
+    <div class="table-scroll wide">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Item</th>
+            <th>Color</th>
+            <th>Changes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in report.updated %}
+          <tr>
+            <td>
+              {% if item.image_url %}
+              <img class="thumb" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
+              {% endif %}
+            </td>
+            <td class="item">
+              <a href="{{ url_for('inventory_detail', bl_inventory_id=item.bl_inventory_id) }}">{{ item.item_no }}</a>
+              <small>{{ item.item_name }}</small>
+            </td>
+            <td>{{ item.color_name }}</td>
+            <td>
+              <ul class="sync-changes">
+                {% for change in item.changes %}
+                <li><strong>{{ change.label }}</strong> <span class="from">{{ change.before }}</span> → {{ change.after }}</li>
+                {% endfor %}
+              </ul>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if report.added %}
+  <section class="panel">
+    <h2>Additions</h2>
+    <div class="table-scroll wide">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Item</th>
+            <th>Color</th>
+            <th>Cond</th>
+            <th>Qty</th>
+            <th>Price</th>
+            <th>Remarks</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in report.added %}
+          <tr>
+            <td>
+              {% if item.image_url %}
+              <img class="thumb" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
+              {% endif %}
+            </td>
+            <td class="item">
+              {{ item.item_no }}
+              <small>{{ item.item_name }} · new lot {{ item.bl_inventory_id }}</small>
+            </td>
+            <td>{{ item.color_name }}</td>
+            <td>{{ 'New' if item.new_or_used == 'N' else ('Used' if item.new_or_used == 'U' else item.new_or_used) }}</td>
+            <td>{{ '{:,}'.format(item.quantity) }}</td>
+            <td>{{ money3(item.unit_price_milli) }}</td>
+            <td class="clip">{{ item.remarks }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if report.removed %}
+  <section class="panel">
+    <h2>Deletions</h2>
+    <div class="table-scroll wide">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Item</th>
+            <th>Color</th>
+            <th>Cond</th>
+            <th>Qty</th>
+            <th>Price</th>
+            <th>Remarks</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in report.removed %}
+          <tr>
+            <td>
+              {% if item.image_url %}
+              <img class="thumb" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
+              {% endif %}
+            </td>
+            <td class="item">
+              <a href="{{ url_for('inventory_detail', bl_inventory_id=item.bl_inventory_id) }}">{{ item.item_no }}</a>
+              <small>{{ item.item_name }} · lot {{ item.bl_inventory_id }}</small>
+            </td>
+            <td>{{ item.color_name }}</td>
+            <td>{{ 'New' if item.new_or_used == 'N' else ('Used' if item.new_or_used == 'U' else item.new_or_used) }}</td>
+            <td>{{ '{:,}'.format(item.quantity) }}</td>
+            <td>{{ money3(item.unit_price_milli) }}</td>
+            <td class="clip">{{ item.remarks }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if not report.added and not report.updated and not report.removed %}
+  <p class="empty">BrickLink matches the local inventory. Approve records the sync, or reject to drop this fetch.</p>
+  {% endif %}
+</section>
+<script>
+  document.querySelectorAll("form.sync-form").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      const message = form.dataset.confirm;
+      if (message && !window.confirm(message)) {
+        event.preventDefault();
+        return;
+      }
+      const button = form.querySelector("button");
+      if (button) button.disabled = true;
+      document.body.classList.add("is-busy");
+    });
+  });
+</script>
+{% endblock %}
