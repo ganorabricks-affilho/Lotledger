@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Storage · Inventory · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page">
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Inventory</p>
+      <h1>Storage</h1>
+      <p class="lede">Lots and pieces in each remark on the imported BrickLink snapshot. Stockroom lots are left out.</p>
+    </div>
+  </div>
+
+  <div class="stats compact">
+    <article>
+      <span>Remarks</span>
+      <strong>{{ '{:,}'.format(result.locations) }}</strong>
+      <em>{% if filters.q %}match “{{ filters.q }}”{% else %}storage locations{% endif %}</em>
+    </article>
+    <article>
+      <span>Lots</span>
+      <strong>{{ '{:,}'.format(result.lots) }}</strong>
+      <em>BrickLink listings</em>
+    </article>
+    <article>
+      <span>Pieces</span>
+      <strong>{{ '{:,}'.format(result.pieces) }}</strong>
+      <em>quantity in those lots</em>
+    </article>
+  </div>
+
+  <form class="filters" method="get">
+    <label>Remark
+      <input name="q" value="{{ filters.q }}" placeholder="AE-13">
+    </label>
+    <button type="submit">Filter</button>
+    {% if filters.q %}
+    <a class="btn ghost" href="{{ url_for('inventory_storage') }}">Clear</a>
+    {% endif %}
+  </form>
+
+  {% if result.rows %}
+  <div class="panel">
+    <div class="table-scroll wide">
+      <table>
+        <thead>
+          <tr>
+            {% for key, label in [('remark', 'Remark'), ('lots', 'Lots'), ('pieces', 'Pieces')] %}
+            {% set next_dir = 'desc' if filters.sort == key and filters.dir == 'asc' else 'asc' %}
+            <th class="{{ 'num' if key != 'remark' else '' }} {{ 'is-sorted' if filters.sort == key else '' }}"{% if filters.sort == key %} aria-sort="{{ 'ascending' if filters.dir == 'asc' else 'descending' }}"{% endif %}>
+              <a href="{{ url_for('inventory_storage', q=filters.q, sort=key, dir=next_dir) }}">{{ label }}{% if filters.sort == key %} {{ '↑' if filters.dir == 'asc' else '↓' }}{% endif %}</a>
+            </th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in result.rows %}
+          <tr>
+            <td><a href="{{ url_for('inventory', remark=row.remarks) }}">{{ row.remarks or "No remark" }}</a></td>
+            <td class="num">{{ '{:,}'.format(row.lots) }}</td>
+            <td class="num">{{ '{:,}'.format(row.pieces) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <p class="empty">No remarks match that search.</p>
+  {% endif %}
+</section>
+{% endblock %}

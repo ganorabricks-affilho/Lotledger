@@ -8,29 +8,45 @@
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="{{ url_for('home') }}">Ganorabricks</a>
-    <nav class="site-nav">
-      <div class="nav-group {{ 'is-here' if nav_section == 'lotledger' else '' }}">
-        <a class="nav-label" href="{{ url_for('dashboard') }}">Lotledger</a>
-        <a class="{{ 'is-here' if request.endpoint == 'dashboard' else '' }}" href="{{ url_for('dashboard') }}">P&amp;L</a>
-        <a class="{{ 'is-here' if request.endpoint in ['lots', 'lot_detail', 'lot_edit'] else '' }}" href="{{ url_for('lots') }}">Lots</a>
-        <a class="{{ 'is-here' if request.endpoint == 'lot_price_sync' else '' }}" href="{{ url_for('lot_price_sync') }}">Price sync</a>
-        <a class="{{ 'is-here' if request.endpoint in ['sales', 'order_detail'] else '' }}" href="{{ url_for('sales') }}">Sales</a>
-        <a class="{{ 'is-here' if request.endpoint == 'sales_profit' else '' }}" href="{{ url_for('sales_profit') }}">Profit</a>
-      </div>
-      <div class="nav-group {{ 'is-here' if nav_section == 'inventory' else '' }}">
-        <a class="nav-label {{ 'is-here' if request.endpoint in ['inventory', 'inventory_detail'] else '' }}" href="{{ url_for('inventory') }}">Inventory</a>
-      </div>
-      <div class="nav-group {{ 'is-here' if nav_section == 'expenses' else '' }}">
-        <a class="nav-label {{ 'is-here' if request.endpoint == 'expenses' else '' }}" href="{{ url_for('expenses') }}">Expenses</a>
-      </div>
-      <div class="nav-group {{ 'is-here' if nav_section == 'setup' else '' }}">
-        <span class="nav-label">Setup</span>
-        <a class="{{ 'is-here' if request.endpoint == 'settings' else '' }}" href="{{ url_for('settings') }}">Settings</a>
-        <a class="{{ 'is-here' if request.endpoint == 'brickowl_lab' else '' }}" href="{{ url_for('brickowl_lab') }}">BrickOwl lab</a>
-        <a class="{{ 'is-here' if request.endpoint == 'bricklink_lab' else '' }}" href="{{ url_for('bricklink_lab') }}">BrickLink lab</a>
-      </div>
+    <nav class="main-nav">
+      <a class="logo" href="{{ url_for('home') }}">
+        <img src="{{ url_for('static', filename='ganorabricks-logo.png') }}" alt="">
+        <span>Ganorabricks</span>
+      </a>
+      <ul>
+        <li><a class="stud {{ 'is-here' if nav_section == 'lotledger' else '' }}" href="{{ url_for('dashboard') }}">Lotledger</a></li>
+        <li><a class="stud {{ 'is-here' if nav_section == 'inventory' else '' }}" href="{{ url_for('inventory') }}">Inventory</a></li>
+        <li><a class="stud {{ 'is-here' if nav_section == 'forge' else '' }}" href="{{ url_for('forge') }}">Minifig Forge</a></li>
+        <li><a class="stud {{ 'is-here' if nav_section == 'expenses' else '' }}" href="{{ url_for('expenses') }}">Expenses</a></li>
+        <li><a class="stud {{ 'is-here' if nav_section == 'setup' else '' }}" href="{{ url_for('settings') }}">Setup</a></li>
+      </ul>
     </nav>
+    {% if nav_section == 'lotledger' %}
+    <nav class="subnav" aria-label="Lotledger">
+      <a class="{{ 'is-here' if request.endpoint == 'dashboard' else '' }}" href="{{ url_for('dashboard') }}">P&amp;L</a>
+      <a class="{{ 'is-here' if request.endpoint in ['lots', 'lot_detail', 'lot_edit'] else '' }}" href="{{ url_for('lots') }}">Lots</a>
+      <a class="{{ 'is-here' if request.endpoint == 'lot_price_sync' else '' }}" href="{{ url_for('lot_price_sync') }}">Price sync</a>
+      <a class="{{ 'is-here' if request.endpoint in ['sales', 'order_detail'] else '' }}" href="{{ url_for('sales') }}">Sales</a>
+      <a class="{{ 'is-here' if request.endpoint == 'sales_profit' else '' }}" href="{{ url_for('sales_profit') }}">Profit</a>
+    </nav>
+    {% elif nav_section == 'inventory' %}
+    <nav class="subnav" aria-label="Inventory">
+      <a class="{{ 'is-here' if request.endpoint in ['inventory', 'inventory_detail'] else '' }}" href="{{ url_for('inventory') }}">Store</a>
+      <a class="{{ 'is-here' if request.endpoint == 'inventory_storage' else '' }}" href="{{ url_for('inventory_storage') }}">Storage</a>
+      <a class="{{ 'is-here' if request.endpoint == 'inventory_duplicates' else '' }}" href="{{ url_for('inventory_duplicates') }}">Duplicates</a>
+    </nav>
+    {% elif nav_section == 'forge' %}
+    <nav class="subnav" aria-label="Minifig Forge">
+      <a class="{{ 'is-here' if request.endpoint == 'forge' else '' }}" href="{{ url_for('forge') }}">Buildable</a>
+      <a class="{{ 'is-here' if request.endpoint == 'forge_parts' else '' }}" href="{{ url_for('forge_parts') }}">Parts</a>
+    </nav>
+    {% elif nav_section == 'setup' %}
+    <nav class="subnav" aria-label="Setup">
+      <a class="{{ 'is-here' if request.endpoint == 'settings' else '' }}" href="{{ url_for('settings') }}">Settings</a>
+      <a class="{{ 'is-here' if request.endpoint == 'brickowl_lab' else '' }}" href="{{ url_for('brickowl_lab') }}">BrickOwl lab</a>
+      <a class="{{ 'is-here' if request.endpoint == 'bricklink_lab' else '' }}" href="{{ url_for('bricklink_lab') }}">BrickLink lab</a>
+    </nav>
+    {% endif %}
   </header>
   <main>
     {% with messages = get_flashed_messages() %}

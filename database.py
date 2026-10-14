@@ -169,6 +169,63 @@ CREATE TABLE IF NOT EXISTS inventory_imports (
     updated INTEGER NOT NULL DEFAULT 0,
     removed INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS store_inventory_staging (
+    bl_inventory_id TEXT PRIMARY KEY,
+    item_no TEXT NOT NULL DEFAULT '',
+    item_name TEXT NOT NULL DEFAULT '',
+    item_type TEXT NOT NULL DEFAULT '',
+    category_id TEXT NOT NULL DEFAULT '',
+    color_id TEXT NOT NULL DEFAULT '',
+    color_name TEXT NOT NULL DEFAULT '',
+    quantity INTEGER NOT NULL DEFAULT 0,
+    new_or_used TEXT NOT NULL DEFAULT '',
+    completeness TEXT NOT NULL DEFAULT '',
+    unit_price TEXT NOT NULL DEFAULT '',
+    unit_price_milli INTEGER NOT NULL DEFAULT 0,
+    bind_id TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    remarks TEXT NOT NULL DEFAULT '',
+    bulk INTEGER NOT NULL DEFAULT 0,
+    is_retain INTEGER NOT NULL DEFAULT 0,
+    is_stock_room INTEGER NOT NULL DEFAULT 0,
+    stock_room_id TEXT NOT NULL DEFAULT '',
+    date_created TEXT NOT NULL DEFAULT '',
+    my_cost TEXT NOT NULL DEFAULT '',
+    my_cost_milli INTEGER NOT NULL DEFAULT 0,
+    sale_rate INTEGER NOT NULL DEFAULT 0,
+    tier_quantity1 INTEGER NOT NULL DEFAULT 0,
+    tier_price1 TEXT NOT NULL DEFAULT '',
+    tier_quantity2 INTEGER NOT NULL DEFAULT 0,
+    tier_price2 TEXT NOT NULL DEFAULT '',
+    tier_quantity3 INTEGER NOT NULL DEFAULT 0,
+    tier_price3 TEXT NOT NULL DEFAULT '',
+    my_weight TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '',
+    api_json TEXT NOT NULL DEFAULT '',
+    imported_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS inventory_sync_batch (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    fetched_at TEXT NOT NULL,
+    row_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS minifig_price_guide (
+    fig_id TEXT NOT NULL,
+    guide_type TEXT NOT NULL,
+    new_or_used TEXT NOT NULL,
+    currency_code TEXT NOT NULL,
+    qty_avg_price_milli INTEGER,
+    avg_price_milli INTEGER,
+    min_price_milli INTEGER,
+    max_price_milli INTEGER,
+    unit_quantity INTEGER NOT NULL DEFAULT 0,
+    total_quantity INTEGER NOT NULL DEFAULT 0,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (fig_id, guide_type, new_or_used, currency_code)
+);
 """
 
 
@@ -244,6 +301,7 @@ def init_db() -> None:
                 "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 ("order_line_price_scale", "milli"),
             )
+        conn.execute("DELETE FROM store_inventory WHERE is_stock_room = 1")
     if added_packing:
         with get_conn() as conn:
             order_ids = [row["id"] for row in conn.execute("SELECT id FROM orders")]
@@ -268,6 +326,36 @@ def money3(millis: int) -> str:
     sign = "-" if millis < 0 else ""
     millis = abs(millis or 0)
     return f"{sign}${millis // 1000:,}.{millis % 1000:03d}"
+
+
+def inventory_age(date_created: str, today=None) -> dict:
+    """Age of a store lot from BrickLink's date_created."""
+    day = str(date_created or "").strip()[:10]
+    try:
+        added = datetime.strptime(day, "%Y-%m-%d").date()
+    except ValueError:
+        return {"age_label": "—", "added_on": ""}
+    today = today or datetime.now().date()
+    if added > today:
+        return {"age_label": "today", "added_on": added.isoformat()}
+    years = today.year - added.year
+    months = today.month - added.month
+    days = today.day - added.day
+    if days < 0:
+        months -= 1
+    if months < 0:
+        years -= 1
+        months += 12
+    if years > 0 and months > 0:
+        label = f"{years}y {months}m"
+    elif years > 0:
+        label = f"{years}y"
+    elif months > 0:
+        label = f"{months}m"
+    else:
+        span = (today - added).days
+        label = "today" if span == 0 else f"{span}d"
+    return {"age_label": label, "added_on": added.isoformat()}
 
 
 def money_input(cents: int) -> str:
@@ -2248,13 +2336,159 @@ def home_counts() -> dict:
     with get_conn() as conn:
         lots = conn.execute("SELECT COUNT(*) AS n FROM lots").fetchone()["n"]
         inventory = conn.execute(
-            "SELECT COUNT(*) AS listings, COALESCE(SUM(quantity), 0) AS qty FROM store_inventory"
+            "SELECT COUNT(*) AS listings, COALESCE(SUM(quantity), 0) AS qty FROM store_inventory WHERE is_stock_room = 0"
         ).fetchone()
     return {
         "lot_count": lots,
         "listings": inventory["listings"],
         "qty": inventory["qty"],
     }
+
+
+def minifig_price_fetched_at(fig_id: str, guide_type: str, new_or_used: str, currency_code: str) -> str:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT fetched_at FROM minifig_price_guide
+            WHERE fig_id = ? AND guide_type = ? AND new_or_used = ? AND currency_code = ?
+            """,
+            (fig_id, guide_type, new_or_used, currency_code),
+        ).fetchone()
+    return row["fetched_at"] if row else ""
+
+
+def load_minifig_prices(guide_type: str, new_or_used: str, currency_code: str) -> dict:
+    """Saved BrickLink price-guide rows, keyed by minifigure id."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT fig_id, qty_avg_price_milli, unit_quantity, fetched_at
+            FROM minifig_price_guide
+            WHERE guide_type = ? AND new_or_used = ? AND currency_code = ?
+            """,
+            (guide_type, new_or_used, currency_code),
+        ).fetchall()
+    return {
+        row["fig_id"]: {
+            "price_milli": row["qty_avg_price_milli"],
+            "unit_quantity": int(row["unit_quantity"] or 0),
+            "fetched_at": row["fetched_at"],
+        }
+        for row in rows
+    }
+
+
+def save_minifig_price(row: dict) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO minifig_price_guide (
+                fig_id, guide_type, new_or_used, currency_code,
+                qty_avg_price_milli, avg_price_milli, min_price_milli, max_price_milli,
+                unit_quantity, total_quantity, fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fig_id, guide_type, new_or_used, currency_code) DO UPDATE SET
+                qty_avg_price_milli = excluded.qty_avg_price_milli,
+                avg_price_milli = excluded.avg_price_milli,
+                min_price_milli = excluded.min_price_milli,
+                max_price_milli = excluded.max_price_milli,
+                unit_quantity = excluded.unit_quantity,
+                total_quantity = excluded.total_quantity,
+                fetched_at = excluded.fetched_at
+            """,
+            (
+                row["fig_id"],
+                row["guide_type"],
+                row["new_or_used"],
+                row["currency_code"],
+                row.get("qty_avg_price_milli"),
+                row.get("avg_price_milli"),
+                row.get("min_price_milli"),
+                row.get("max_price_milli"),
+                int(row.get("unit_quantity") or 0),
+                int(row.get("total_quantity") or 0),
+                row["fetched_at"],
+            ),
+        )
+
+
+def _part_key(item_no: str, color_id) -> tuple[str, str]:
+    color = str(color_id or "").strip()
+    if color.isdigit():
+        color = str(int(color))
+    return ((item_no or "").strip(), color)
+
+
+def inventory_part_quantities() -> dict[tuple[str, str], int]:
+    """Part number and color id -> quantity on the local snapshot, including the stockroom."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT item_no, color_id, SUM(quantity) AS qty
+            FROM store_inventory
+            WHERE item_type = 'PART' AND quantity > 0
+            GROUP BY item_no, color_id
+            """
+        ).fetchall()
+    owned = {}
+    for row in rows:
+        key = _part_key(row["item_no"], row["color_id"])
+        owned[key] = owned.get(key, 0) + int(row["qty"] or 0)
+    return owned
+
+
+def inventory_part_places() -> dict[tuple[str, str], list[dict]]:
+    """Part number and color id -> inventory remarks and how many sit in each."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT item_no, color_id, remarks, SUM(quantity) AS qty
+            FROM store_inventory
+            WHERE item_type = 'PART' AND quantity > 0
+            GROUP BY item_no, color_id, remarks
+            """
+        ).fetchall()
+    grouped: dict[tuple[str, str], dict[str, int]] = {}
+    for row in rows:
+        key = _part_key(row["item_no"], row["color_id"])
+        remark = (row["remarks"] or "").strip()
+        bucket = grouped.setdefault(key, {})
+        bucket[remark] = bucket.get(remark, 0) + int(row["qty"] or 0)
+    places = {}
+    for key, bucket in grouped.items():
+        places[key] = [
+            {"remark": remark, "qty": qty}
+            for remark, qty in sorted(bucket.items(), key=lambda item: item[0].lower())
+        ]
+    return places
+
+
+def inventory_part_prices() -> dict[tuple[str, str], list[dict]]:
+    """Part number and color id -> listed prices, cheapest first, after any sale."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT item_no, color_id, unit_price_milli, sale_rate, SUM(quantity) AS qty
+            FROM store_inventory
+            WHERE item_type = 'PART' AND quantity > 0
+            GROUP BY item_no, color_id, unit_price_milli, sale_rate
+            """
+        ).fetchall()
+    grouped: dict[tuple[str, str], dict[int, int]] = {}
+    for row in rows:
+        key = _part_key(row["item_no"], row["color_id"])
+        unit = int(row["unit_price_milli"] or 0)
+        sale = max(0, min(100, int(row["sale_rate"] or 0)))
+        milli = int(round(unit * (100 - sale) / 100))
+        bucket = grouped.setdefault(key, {})
+        bucket[milli] = bucket.get(milli, 0) + int(row["qty"] or 0)
+    prices = {}
+    for key, bucket in grouped.items():
+        prices[key] = [
+            {"milli": milli, "qty": qty}
+            for milli, qty in sorted(bucket.items())
+        ]
+    return prices
 
 
 def inventory_summary() -> dict:
@@ -2271,6 +2505,7 @@ def inventory_summary() -> dict:
                     THEN quantity * unit_price_milli * (100 - MIN(sale_rate, 100)) / 100
                     ELSE 0 END), 0) AS for_sale_milli
             FROM store_inventory
+            WHERE is_stock_room = 0
             """
         ).fetchone()
         latest = conn.execute(
@@ -2290,15 +2525,44 @@ def get_store_inventory(bl_inventory_id: str):
     return dict(row) if row else None
 
 
+_INVENTORY_TIE = (
+    "item_no COLLATE NOCASE, color_name COLLATE NOCASE, new_or_used, "
+    "CAST(bl_inventory_id AS INTEGER)"
+)
+
+INVENTORY_SORTS = {
+    "item": f"item_no COLLATE NOCASE {{dir}}, color_name COLLATE NOCASE, new_or_used, CAST(bl_inventory_id AS INTEGER)",
+    "color": f"color_name COLLATE NOCASE {{dir}}, {_INVENTORY_TIE}",
+    "cond": f"new_or_used {{dir}}, {_INVENTORY_TIE}",
+    "qty": f"quantity {{dir}}, {_INVENTORY_TIE}",
+    "price": (
+        "CAST(ROUND(unit_price_milli * (100 - MIN(sale_rate, 100)) / 100.0) AS INTEGER) {dir}, "
+        + _INVENTORY_TIE
+    ),
+    "age": f"CASE WHEN date_created = '' THEN 1 ELSE 0 END, date_created {{dir}}, {_INVENTORY_TIE}",
+    "remarks": f"remarks COLLATE NOCASE {{dir}}, {_INVENTORY_TIE}",
+}
+
+
+def _inventory_order(sort: str, direction: str) -> str:
+    if sort not in INVENTORY_SORTS:
+        sort = "age"
+    sql_dir = "DESC" if direction == "desc" else "ASC"
+    return INVENTORY_SORTS[sort].format(dir=sql_dir)
+
+
 def list_store_inventory(
     q: str = "",
     item_type: str = "",
     condition: str = "",
     stock: str = "",
+    remark: Optional[str] = None,
+    sort: str = "age",
+    direction: str = "asc",
     page: int = 1,
     limit: int = 100,
 ) -> dict:
-    clauses = []
+    clauses = ["is_stock_room = 0"]
     params = []
     text = (q or "").strip()
     if text:
@@ -2317,6 +2581,9 @@ def list_store_inventory(
     if condition:
         clauses.append("new_or_used = ?")
         params.append(condition)
+    if remark is not None:
+        clauses.append("remarks = ?")
+        params.append(remark)
     if stock == "for_sale":
         clauses.append("is_retain = 0 AND is_stock_room = 0")
     elif stock == "retain":
@@ -2325,6 +2592,7 @@ def list_store_inventory(
         clauses.append("is_stock_room = 1 AND stock_room_id = ?")
         params.append(stock)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order = _inventory_order(sort, direction)
     limit = max(1, int(limit))
     with get_conn() as conn:
         total = conn.execute(
@@ -2338,8 +2606,7 @@ def list_store_inventory(
             f"""
             SELECT * FROM store_inventory
             {where}
-            ORDER BY item_no COLLATE NOCASE, color_name COLLATE NOCASE,
-                     new_or_used, CAST(bl_inventory_id AS INTEGER)
+            ORDER BY {order}
             LIMIT ? OFFSET ?
             """,
             [*params, limit, offset],
@@ -2349,7 +2616,7 @@ def list_store_inventory(
             for row in conn.execute(
                 """
                 SELECT DISTINCT item_type FROM store_inventory
-                WHERE item_type != ''
+                WHERE item_type != '' AND is_stock_room = 0
                 ORDER BY item_type
                 """
             )
@@ -2361,6 +2628,268 @@ def list_store_inventory(
         "pages": pages,
         "types": types,
     }
+
+
+STORAGE_SORTS = {
+    "remark": "remarks COLLATE NOCASE {dir}",
+    "lots": "lots {dir}, remarks COLLATE NOCASE",
+    "pieces": "pieces {dir}, remarks COLLATE NOCASE",
+}
+
+
+def list_inventory_storage(q: str = "", sort: str = "remark", direction: str = "asc") -> dict:
+    """Lots and pieces grouped by the BrickLink remark on the imported snapshot."""
+    clauses = ["is_stock_room = 0"]
+    params = []
+    text = (q or "").strip()
+    if text:
+        clauses.append("remarks LIKE ? ESCAPE '\\'")
+        params.append(_like_term(text))
+    where = f"WHERE {' AND '.join(clauses)}"
+    if sort not in STORAGE_SORTS:
+        sort = "remark"
+    sql_dir = "DESC" if direction == "desc" else "ASC"
+    order = STORAGE_SORTS[sort].format(dir=sql_dir)
+    with get_conn() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT remarks, COUNT(*) AS lots, COALESCE(SUM(quantity), 0) AS pieces
+                FROM store_inventory
+                {where}
+                GROUP BY remarks
+                ORDER BY {order}
+                """,
+                params,
+            )
+        ]
+    return {
+        "rows": rows,
+        "locations": len(rows),
+        "lots": sum(row["lots"] for row in rows),
+        "pieces": sum(row["pieces"] for row in rows),
+    }
+
+
+def inventory_duplicate_summary() -> dict:
+    """Lots that share item number, color, condition, and description."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS groups,
+                   COALESCE(SUM(lot_count), 0) AS lots,
+                   COALESCE(SUM(CASE WHEN price_count > 1 THEN 1 ELSE 0 END), 0) AS price_groups
+            FROM (
+                SELECT COUNT(*) AS lot_count,
+                       COUNT(DISTINCT unit_price) AS price_count
+                FROM store_inventory
+                WHERE is_stock_room = 0
+                GROUP BY item_no, color_id, new_or_used, description
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()
+        summary = dict(row)
+        pending = conn.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM store_inventory AS lot
+        JOIN (
+            SELECT item_no, color_id, new_or_used, description,
+                   MAX(unit_price_milli) AS target_milli
+            FROM store_inventory
+            WHERE is_stock_room = 0
+            GROUP BY item_no, color_id, new_or_used, description
+            HAVING COUNT(*) > 1 AND COUNT(DISTINCT unit_price) > 1
+        ) AS grp
+          ON lot.item_no = grp.item_no
+         AND lot.color_id = grp.color_id
+         AND lot.new_or_used = grp.new_or_used
+         AND lot.description = grp.description
+        WHERE lot.is_stock_room = 0
+          AND lot.unit_price_milli < grp.target_milli
+        """
+        ).fetchone()
+    summary["lots_to_raise"] = pending["n"]
+    return summary
+
+
+def list_inventory_duplicates(
+    q: str = "",
+    price: str = "differs",
+    page: int = 1,
+    limit: int = 30,
+) -> dict:
+    if price not in {"differs", "same", "all"}:
+        price = "differs"
+    clauses = ["is_stock_room = 0"]
+    params = []
+    text = (q or "").strip()
+    if text:
+        like = _like_term(text)
+        clauses.append(
+            "("
+            "item_no LIKE ? ESCAPE '\\' OR item_name LIKE ? ESCAPE '\\' "
+            "OR color_name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'"
+            ")"
+        )
+        params.extend([like, like, like, like])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    having = "COUNT(*) > 1"
+    if price == "differs":
+        having += " AND COUNT(DISTINCT unit_price) > 1"
+    elif price == "same":
+        having += " AND COUNT(DISTINCT unit_price) = 1"
+    grouped_sql = f"""
+        SELECT item_no, color_id, new_or_used, description,
+               COUNT(*) AS lot_count,
+               COUNT(DISTINCT unit_price) AS price_count,
+               MIN(unit_price_milli) AS min_milli,
+               MAX(unit_price_milli) AS max_milli,
+               (MAX(unit_price_milli) - MIN(unit_price_milli)) AS spread_milli,
+               SUM(quantity) AS qty,
+               MAX(item_name) AS item_name,
+               MAX(color_name) AS color_name,
+               MAX(item_type) AS item_type,
+               MAX(image_url) AS image_url
+        FROM store_inventory
+        {where}
+        GROUP BY item_no, color_id, new_or_used, description
+        HAVING {having}
+    """
+    limit = max(1, int(limit))
+    with get_conn() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) AS n FROM ({grouped_sql})",
+            params,
+        ).fetchone()["n"]
+        pages = max(1, (total + limit - 1) // limit) if total else 1
+        page = min(max(1, int(page)), pages)
+        offset = (page - 1) * limit
+        groups = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                {grouped_sql}
+                ORDER BY spread_milli DESC, lot_count DESC, item_no
+                LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            )
+        ]
+        lots_by_key = {}
+        if groups:
+            placeholders = ",".join("(?,?,?,?)" for _ in groups)
+            key_params = [
+                value
+                for group in groups
+                for value in (
+                    group["item_no"],
+                    group["color_id"],
+                    group["new_or_used"],
+                    group["description"],
+                )
+            ]
+            lot_rows = conn.execute(
+                f"""
+                SELECT * FROM store_inventory
+                WHERE is_stock_room = 0
+                  AND (item_no, color_id, new_or_used, description) IN ({placeholders})
+                ORDER BY unit_price_milli, CAST(bl_inventory_id AS INTEGER)
+                """,
+                key_params,
+            ).fetchall()
+            for row in lot_rows:
+                key = (row["item_no"], row["color_id"], row["new_or_used"], row["description"])
+                lots_by_key.setdefault(key, []).append(dict(row))
+    for group in groups:
+        key = (group["item_no"], group["color_id"], group["new_or_used"], group["description"])
+        group["lots"] = lots_by_key.get(key, [])
+    return {"groups": groups, "total": total, "page": page, "pages": pages}
+
+
+def duplicate_price_updates(
+    item_no: str = "",
+    color_id: str = "",
+    new_or_used: str = "",
+    description: str = "",
+    matched_group: bool = False,
+) -> list:
+    """Lots priced under the highest unit price in the same duplicate group."""
+    clauses = ["is_stock_room = 0"]
+    params = []
+    if matched_group:
+        clauses.extend(
+            ["item_no = ?", "color_id = ?", "new_or_used = ?", "description = ?"]
+        )
+        params.extend([item_no, color_id, new_or_used, description])
+    where = "WHERE " + " AND ".join(clauses)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT bl_inventory_id, item_no, color_id, new_or_used, description,
+                   unit_price, unit_price_milli
+            FROM store_inventory
+            {where}
+            """,
+            params,
+        ).fetchall()
+    buckets = {}
+    for row in rows:
+        key = (row["item_no"], row["color_id"], row["new_or_used"], row["description"])
+        buckets.setdefault(key, []).append(dict(row))
+    updates = []
+    for lots in buckets.values():
+        if len(lots) < 2:
+            continue
+        if len({lot["unit_price"] for lot in lots}) < 2:
+            continue
+        target_milli = max(int(lot["unit_price_milli"] or 0) for lot in lots)
+        target_price = next(
+            lot["unit_price"] for lot in lots if int(lot["unit_price_milli"] or 0) == target_milli
+        )
+        for lot in lots:
+            if int(lot["unit_price_milli"] or 0) < target_milli:
+                updates.append(
+                    {
+                        "bl_inventory_id": lot["bl_inventory_id"],
+                        "item_no": lot["item_no"],
+                        "from_price": lot["unit_price"],
+                        "target_price": target_price,
+                        "target_milli": target_milli,
+                    }
+                )
+    return updates
+
+
+def set_store_inventory_price(bl_inventory_id: str, unit_price: str, unit_price_milli: int) -> None:
+    with get_conn() as conn:
+        current = conn.execute(
+            "SELECT api_json FROM store_inventory WHERE bl_inventory_id = ?",
+            (bl_inventory_id,),
+        ).fetchone()
+        payload = {}
+        if current and current["api_json"]:
+            try:
+                payload = json.loads(current["api_json"])
+            except json.JSONDecodeError:
+                payload = {}
+        if isinstance(payload, dict):
+            payload["unit_price"] = unit_price
+        conn.execute(
+            """
+            UPDATE store_inventory
+            SET unit_price = ?, unit_price_milli = ?, api_json = ?
+            WHERE bl_inventory_id = ?
+            """,
+            (
+                unit_price,
+                int(unit_price_milli),
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                bl_inventory_id,
+            ),
+        )
 
 
 def replace_store_inventory(rows: list) -> dict:
@@ -2427,3 +2956,391 @@ def replace_store_inventory(rows: list) -> dict:
         "updated": updated,
         "removed": len(removed),
     }
+
+
+_INT_SYNC_FIELDS = {
+    "quantity",
+    "unit_price_milli",
+    "bulk",
+    "is_retain",
+    "is_stock_room",
+    "my_cost_milli",
+    "sale_rate",
+    "tier_quantity1",
+    "tier_quantity2",
+    "tier_quantity3",
+}
+
+SYNC_FIELD_LABELS = {
+    "item_no": "Item number",
+    "item_name": "Name",
+    "item_type": "Type",
+    "category_id": "Category",
+    "color_id": "Color id",
+    "color_name": "Color",
+    "quantity": "Quantity",
+    "new_or_used": "Condition",
+    "completeness": "Completeness",
+    "unit_price": "Price",
+    "bind_id": "Bind",
+    "description": "Description",
+    "remarks": "Remarks",
+    "bulk": "Bulk",
+    "is_retain": "Retain",
+    "is_stock_room": "Stockroom",
+    "stock_room_id": "Stockroom id",
+    "date_created": "Created",
+    "my_cost": "My cost",
+    "sale_rate": "Sale",
+    "tier_quantity1": "Tier 1 qty",
+    "tier_price1": "Tier 1 price",
+    "tier_quantity2": "Tier 2 qty",
+    "tier_price2": "Tier 2 price",
+    "tier_quantity3": "Tier 3 qty",
+    "tier_price3": "Tier 3 price",
+    "my_weight": "Weight",
+    "image_url": "Image",
+    "api_json": "BrickLink payload",
+}
+
+SYNC_CHANGE_ORDER = (
+    "quantity",
+    "unit_price",
+    "sale_rate",
+    "my_cost",
+    "new_or_used",
+    "completeness",
+    "color_name",
+    "color_id",
+    "item_no",
+    "item_name",
+    "item_type",
+    "category_id",
+    "description",
+    "remarks",
+    "bulk",
+    "is_retain",
+    "is_stock_room",
+    "stock_room_id",
+    "date_created",
+    "bind_id",
+    "tier_quantity1",
+    "tier_price1",
+    "tier_quantity2",
+    "tier_price2",
+    "tier_quantity3",
+    "tier_price3",
+    "my_weight",
+    "image_url",
+)
+
+
+def _sync_value(field: str, row: dict):
+    value = row.get(field)
+    if field in _INT_SYNC_FIELDS:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _clip_sync(value: str, limit: int = 160) -> str:
+    text = value if value else "—"
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _show_sync_field(field: str, row: dict) -> str:
+    value = _sync_value(field, row)
+    if field in {"is_retain", "is_stock_room"}:
+        return "Yes" if value else "No"
+    if field == "new_or_used":
+        return {"N": "New", "U": "Used"}.get(value, value or "—")
+    if field == "sale_rate":
+        return f"{value}%"
+    if field in {"quantity", "bulk"} or field.startswith("tier_quantity"):
+        return f"{value:,}"
+    return _clip_sync(value)
+
+
+def _sync_summary(row: dict) -> dict:
+    return {
+        "bl_inventory_id": _sync_value("bl_inventory_id", row) if "bl_inventory_id" in row else str(row.get("bl_inventory_id") or ""),
+        "item_no": _sync_value("item_no", row),
+        "item_name": _sync_value("item_name", row),
+        "item_type": _sync_value("item_type", row),
+        "color_id": _sync_value("color_id", row),
+        "color_name": _sync_value("color_name", row),
+        "new_or_used": _sync_value("new_or_used", row),
+        "quantity": _sync_value("quantity", row),
+        "unit_price_milli": _sync_value("unit_price_milli", row),
+        "remarks": _sync_value("remarks", row),
+        "description": _sync_value("description", row),
+        "image_url": _sync_value("image_url", row),
+    }
+
+
+def _price_like_change(old: dict, new: dict, text_field: str, milli_field: str, label: str):
+    text_same = _sync_value(text_field, old) == _sync_value(text_field, new)
+    milli_same = _sync_value(milli_field, old) == _sync_value(milli_field, new)
+    if text_same and milli_same:
+        return None
+    if not milli_same:
+        before = money3(_sync_value(milli_field, old))
+        after = money3(_sync_value(milli_field, new))
+    else:
+        before = _clip_sync(_sync_value(text_field, old))
+        after = _clip_sync(_sync_value(text_field, new))
+    return {"field": text_field, "label": label, "before": before, "after": after}
+
+
+def inventory_row_changes(old: dict, new: dict) -> list:
+    """Fields that differ between a stored lot and the BrickLink copy."""
+    found = {}
+    price = _price_like_change(old, new, "unit_price", "unit_price_milli", "Price")
+    if price:
+        found["unit_price"] = price
+    cost = _price_like_change(old, new, "my_cost", "my_cost_milli", "My cost")
+    if cost:
+        found["my_cost"] = cost
+    skip = {
+        "id",
+        "bl_inventory_id",
+        "imported_at",
+        "unit_price",
+        "unit_price_milli",
+        "my_cost",
+        "my_cost_milli",
+        "api_json",
+    }
+    for field in SYNC_CHANGE_ORDER:
+        if field in skip or field in found:
+            continue
+        if _sync_value(field, old) == _sync_value(field, new):
+            continue
+        found[field] = {
+            "field": field,
+            "label": SYNC_FIELD_LABELS.get(field, field),
+            "before": _show_sync_field(field, old),
+            "after": _show_sync_field(field, new),
+        }
+    if not found and _sync_value("api_json", old) != _sync_value("api_json", new):
+        found["api_json"] = {
+            "field": "api_json",
+            "label": SYNC_FIELD_LABELS["api_json"],
+            "before": "previous",
+            "after": "updated",
+        }
+    ordered = [field for field in SYNC_CHANGE_ORDER if field in found]
+    if "api_json" in found:
+        ordered.append("api_json")
+    return [found[field] for field in ordered]
+
+
+def diff_store_inventory(current: dict, incoming: dict) -> dict:
+    """Compare inventory maps keyed by BrickLink inventory id."""
+    added = []
+    removed = []
+    updated = []
+    unchanged = 0
+    for bl_id, row in incoming.items():
+        old = current.get(bl_id)
+        if old is None:
+            added.append(_sync_summary(row))
+            continue
+        changes = inventory_row_changes(old, row)
+        if changes:
+            item = _sync_summary(row)
+            item["changes"] = changes
+            updated.append(item)
+        else:
+            unchanged += 1
+    for bl_id, row in current.items():
+        if bl_id not in incoming:
+            removed.append(_sync_summary(row))
+
+    def sort_key(row):
+        return (row.get("item_no") or "", row.get("color_id") or "", row.get("bl_inventory_id") or "")
+
+    added.sort(key=sort_key)
+    removed.sort(key=sort_key)
+    updated.sort(key=sort_key)
+    return {
+        "added": added,
+        "removed": removed,
+        "updated": updated,
+        "unchanged": unchanged,
+    }
+
+
+def _inventory_tuple(row: dict, imported_at: str) -> tuple:
+    values = []
+    for field in STORE_INVENTORY_FIELDS:
+        if field == "imported_at":
+            values.append(imported_at)
+        elif field == "bl_inventory_id":
+            values.append(str(row.get("bl_inventory_id") or "").strip())
+        else:
+            values.append(_sync_value(field, row))
+    return tuple(values)
+
+
+def _inventory_upsert_sql(table: str) -> str:
+    if table not in {"store_inventory", "store_inventory_staging"}:
+        raise ValueError("Unknown inventory table.")
+    columns = ", ".join(STORE_INVENTORY_FIELDS)
+    placeholders = ", ".join("?" for _ in STORE_INVENTORY_FIELDS)
+    updates = ", ".join(
+        f"{field} = excluded.{field}"
+        for field in STORE_INVENTORY_FIELDS
+        if field != "bl_inventory_id"
+    )
+    return (
+        f"INSERT INTO {table} ({columns}) VALUES ({placeholders}) "
+        f"ON CONFLICT(bl_inventory_id) DO UPDATE SET {updates}"
+    )
+
+
+def _load_inventory_map(conn, table: str) -> dict:
+    if table not in {"store_inventory", "store_inventory_staging"}:
+        raise ValueError("Unknown inventory table.")
+    rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+    return {row["bl_inventory_id"]: dict(row) for row in rows}
+
+
+def pending_inventory_sync() -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT fetched_at, row_count FROM inventory_sync_batch WHERE id = 1"
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def stage_inventory_snapshot(rows: list) -> dict:
+    """Replace the temp BrickLink copy. Does not change the live inventory."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    prepared = []
+    seen = set()
+    for row in rows:
+        bl_id = str(row.get("bl_inventory_id") or "").strip()
+        if not bl_id or bl_id in seen or _sync_value("is_stock_room", row):
+            continue
+        seen.add(bl_id)
+        prepared.append(row)
+    with get_conn() as conn:
+        existing = conn.execute("SELECT COUNT(*) AS n FROM store_inventory").fetchone()["n"]
+        if not prepared and existing:
+            raise ValueError(
+                "BrickLink returned no inventory lots. The local snapshot was left unchanged."
+            )
+        had_pending = conn.execute(
+            "SELECT 1 FROM inventory_sync_batch WHERE id = 1"
+        ).fetchone()
+        conn.execute("DELETE FROM store_inventory_staging")
+        if prepared:
+            conn.executemany(
+                _inventory_upsert_sql("store_inventory_staging"),
+                [_inventory_tuple(row, now) for row in prepared],
+            )
+        conn.execute(
+            """
+            INSERT INTO inventory_sync_batch (id, fetched_at, row_count)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                fetched_at = excluded.fetched_at,
+                row_count = excluded.row_count
+            """,
+            (now, len(prepared)),
+        )
+    return {
+        "fetched_at": now,
+        "row_count": len(prepared),
+        "replaced_pending": bool(had_pending),
+    }
+
+
+def inventory_sync_report() -> Optional[dict]:
+    pending = pending_inventory_sync()
+    if not pending:
+        return None
+    with get_conn() as conn:
+        current = _load_inventory_map(conn, "store_inventory")
+        incoming = _load_inventory_map(conn, "store_inventory_staging")
+    report = diff_store_inventory(current, incoming)
+    report["fetched_at"] = pending["fetched_at"]
+    report["incoming_count"] = pending["row_count"]
+    report["current_count"] = len(current)
+    report["quantity_changes"] = sum(
+        1 for row in report["updated"] if any(change["field"] == "quantity" for change in row["changes"])
+    )
+    report["price_changes"] = sum(
+        1 for row in report["updated"] if any(change["field"] == "unit_price" for change in row["changes"])
+    )
+    return report
+
+
+def apply_inventory_sync() -> dict:
+    """Write the staged BrickLink copy onto the local inventory."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        pending = conn.execute(
+            "SELECT fetched_at, row_count FROM inventory_sync_batch WHERE id = 1"
+        ).fetchone()
+        if not pending:
+            raise ValueError("There is no BrickLink sync waiting for approval.")
+        current = _load_inventory_map(conn, "store_inventory")
+        incoming = _load_inventory_map(conn, "store_inventory_staging")
+        if not incoming and current:
+            raise ValueError(
+                "The staged BrickLink copy is empty. The local snapshot was left unchanged."
+            )
+        report = diff_store_inventory(current, incoming)
+        changed_ids = {row["bl_inventory_id"] for row in report["added"]}
+        changed_ids.update(row["bl_inventory_id"] for row in report["updated"])
+        to_write = [incoming[bl_id] for bl_id in changed_ids if bl_id in incoming]
+        if to_write:
+            conn.executemany(
+                _inventory_upsert_sql("store_inventory"),
+                [_inventory_tuple(row, now) for row in to_write],
+            )
+        removed_ids = [row["bl_inventory_id"] for row in report["removed"]]
+        if removed_ids:
+            conn.executemany(
+                "DELETE FROM store_inventory WHERE bl_inventory_id = ?",
+                [(bl_id,) for bl_id in removed_ids],
+            )
+        conn.execute(
+            """
+            INSERT INTO inventory_imports (imported_at, row_count, added, updated, removed)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                len(incoming),
+                len(report["added"]),
+                len(report["updated"]),
+                len(report["removed"]),
+            ),
+        )
+        conn.execute("DELETE FROM store_inventory_staging")
+        conn.execute("DELETE FROM inventory_sync_batch WHERE id = 1")
+    return {
+        "imported_at": now,
+        "row_count": len(incoming),
+        "added": len(report["added"]),
+        "updated": len(report["updated"]),
+        "removed": len(report["removed"]),
+        "unchanged": report["unchanged"],
+    }
+
+
+def discard_inventory_sync() -> bool:
+    with get_conn() as conn:
+        pending = conn.execute("SELECT 1 FROM inventory_sync_batch WHERE id = 1").fetchone()
+        conn.execute("DELETE FROM store_inventory_staging")
+        conn.execute("DELETE FROM inventory_sync_batch WHERE id = 1")
+    return bool(pending)

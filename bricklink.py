@@ -184,6 +184,62 @@ def creds_from_settings(get_setting) -> dict:
     }
 
 
+class BrickLinkThrottle(ValueError):
+    """BrickLink asked the client to slow down."""
+
+
+def item_price_guide(
+    creds: dict,
+    item_no: str,
+    item_type: str = "MINIFIG",
+    guide_type: str = "sold",
+    new_or_used: str = "U",
+    currency_code: str = "USD",
+) -> dict:
+    """Last-6-months sold guide, or current stock, without the per-sale list."""
+    number = urllib.parse.quote(str(item_no or "").strip(), safe="")
+    if not number:
+        raise ValueError("A BrickLink item number is required.")
+    kind = urllib.parse.quote(str(item_type or "MINIFIG").strip(), safe="")
+    result = call(
+        creds,
+        f"items/{kind}/{number}/price",
+        {
+            "guide_type": guide_type,
+            "new_or_used": new_or_used,
+            "currency_code": currency_code,
+            "vat": "N",
+        },
+        timeout=30,
+    )
+    if result["status"] == 429:
+        raise BrickLinkThrottle("BrickLink is throttling price requests.")
+    data = _data(result)
+    if not isinstance(data, dict):
+        data = {}
+    sales = to_int(data.get("unit_quantity"))
+
+    def milli(key: str):
+        if sales <= 0:
+            return None
+        raw = data.get(key)
+        if raw is None or str(raw).strip() == "":
+            return None
+        return money_milli(raw)
+
+    return {
+        "guide_type": guide_type,
+        "new_or_used": new_or_used,
+        "currency_code": str(data.get("currency_code") or currency_code),
+        "qty_avg_price_milli": milli("qty_avg_price"),
+        "avg_price_milli": milli("avg_price"),
+        "min_price_milli": milli("min_price"),
+        "max_price_milli": milli("max_price"),
+        "unit_quantity": sales,
+        "total_quantity": to_int(data.get("total_quantity")),
+    }
+
+
 def list_inventories(creds: dict, params: dict = None) -> list:
     data = _data(call(creds, "inventories", params or {}, timeout=120))
     return data if isinstance(data, list) else []
@@ -371,6 +427,19 @@ def snapshot_item(raw: dict) -> dict:
     }
 
 
+def update_inventory_price(creds: dict, inventory_id: str, unit_price: str) -> dict:
+    """Set one store lot's unit price. Other fields stay as they are."""
+    result = call(
+        creds,
+        f"inventories/{inventory_id}",
+        method="PUT",
+        body={"unit_price": str(unit_price)},
+    )
+    _raise_for_status(result)
+    data = _data(result)
+    return data if isinstance(data, dict) else {}
+
+
 def fetch_inventory_snapshot(creds: dict) -> list:
     rows = []
     seen = set()
@@ -378,6 +447,8 @@ def fetch_inventory_snapshot(creds: dict) -> list:
         if not isinstance(raw, dict):
             continue
         row = snapshot_item(raw)
+        if row["is_stock_room"]:
+            continue
         bl_id = row["bl_inventory_id"]
         if not bl_id or bl_id in seen:
             continue

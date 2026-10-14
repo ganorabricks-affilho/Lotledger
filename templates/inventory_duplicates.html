@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Duplicates · Inventory · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page">
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Inventory</p>
+      <h1>Duplicate lots</h1>
+      <p class="lede">Lots that share an item number, color, condition, and description. Stockroom lots are left out. A price update sets the cheaper lots in a group to that group's highest price on BrickLink.</p>
+    </div>
+    {% if summary.lots_to_raise %}
+    <form class="sync-form" method="post" action="{{ url_for('inventory_duplicates_sync') }}" data-busy="Updating BrickLink…" data-confirm="Update {{ '{:,}'.format(summary.lots_to_raise) }} BrickLink lots to the highest price in each group?">
+      <input type="hidden" name="scope" value="all">
+      <input type="hidden" name="q" value="{{ filters.q }}">
+      <input type="hidden" name="price" value="{{ filters.price }}">
+      <input type="hidden" name="page" value="{{ filters.page }}">
+      <button type="submit">Update all to highest</button>
+      <p class="import-status" hidden>{{ '{:,}'.format(summary.lots_to_raise) }} lots. This can take a few minutes.</p>
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="stats compact">
+    <article>
+      <span>Groups</span>
+      <strong>{{ '{:,}'.format(summary.groups) }}</strong>
+      <em>same item, color, condition, and description</em>
+    </article>
+    <article>
+      <span>Lots in those groups</span>
+      <strong>{{ '{:,}'.format(summary.lots) }}</strong>
+      <em>separate BrickLink listings</em>
+    </article>
+    <article>
+      <span>Prices differ</span>
+      <strong>{{ '{:,}'.format(summary.price_groups) }}</strong>
+      <em>groups with more than one unit price</em>
+    </article>
+  </div>
+
+  <form class="filters" method="get">
+    <label>Search
+      <input name="q" value="{{ filters.q }}" placeholder="Item or color">
+    </label>
+    <input type="hidden" name="price" value="{{ filters.price }}">
+    <button type="submit">Search</button>
+    {% if filters.q %}
+    <a class="btn ghost" href="{{ url_for('inventory_duplicates', price=filters.price) }}">Clear</a>
+    {% endif %}
+  </form>
+  <div class="listing-filter">
+    <a class="btn ghost {{ 'is-active' if filters.price == 'differs' else '' }}" href="{{ url_for('inventory_duplicates', price='differs', q=filters.q) }}">Prices differ</a>
+    <a class="btn ghost {{ 'is-active' if filters.price == 'same' else '' }}" href="{{ url_for('inventory_duplicates', price='same', q=filters.q) }}">Same price</a>
+    <a class="btn ghost {{ 'is-active' if filters.price == 'all' else '' }}" href="{{ url_for('inventory_duplicates', price='all', q=filters.q) }}">All duplicates</a>
+  </div>
+
+  {% if groups %}
+  <p class="lede pager-note">{{ '{:,}'.format(result.total) }} group{{ 's' if result.total != 1 else '' }}{% if result.pages > 1 %} · page {{ result.page }} of {{ result.pages }}{% endif %}</p>
+  {% for group in groups %}
+  <article class="panel dup-group">
+    <div class="panel-head dup-id">
+      <div class="dup-id">
+        {% if group.image_url %}
+        <img class="thumb" src="{{ group.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
+        {% endif %}
+        <div>
+          <strong>{{ group.item_no }}</strong> {{ group.item_name }}
+          <small>{{ group.color_name or 'No color' }}{% if group.color_id %} · color {{ group.color_id }}{% endif %} · {{ group.condition_label }}{% if group.type_label %} · {{ group.type_label }}{% endif %}</small>
+        </div>
+      </div>
+      <div class="dup-actions">
+        {{ group.lot_count }} lots · {{ '{:,}'.format(group.qty) }} pieces
+        <small>
+          {% if group.price_count > 1 %}
+          {{ group.price_count }} prices · {{ money3(group.min_milli) }} – {{ money3(group.max_milli) }}
+          · gap {{ money3(group.spread_milli) }}
+          {% else %}
+          {{ money3(group.min_milli) }}
+          {% endif %}
+        </small>
+        {% if group.raise_count %}
+        <form class="sync-form" method="post" action="{{ url_for('inventory_duplicates_sync') }}" data-busy="Updating…" data-confirm="Set {{ group.raise_count }} lot{{ 's' if group.raise_count != 1 else '' }} of {{ group.item_no }} to {{ money3(group.max_milli) }} on BrickLink?">
+          <input type="hidden" name="scope" value="group">
+          <input type="hidden" name="item_no" value="{{ group.item_no }}">
+          <input type="hidden" name="color_id" value="{{ group.color_id }}">
+          <input type="hidden" name="new_or_used" value="{{ group.new_or_used }}">
+          <input type="hidden" name="description" value="{{ group.description }}">
+          <input type="hidden" name="q" value="{{ filters.q }}">
+          <input type="hidden" name="price" value="{{ filters.price }}">
+          <input type="hidden" name="page" value="{{ filters.page }}">
+          <button type="submit">Set {{ group.raise_count }} to {{ money3(group.max_milli) }}</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Lot</th>
+          <th>Qty</th>
+          <th>Price</th>
+          <th>Where</th>
+          <th>Description</th>
+          <th>Remarks</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for lot in group.lots %}
+        <tr>
+          <td><a href="{{ url_for('inventory_detail', bl_inventory_id=lot.bl_inventory_id) }}">{{ lot.bl_inventory_id }}</a></td>
+          <td>{{ '{:,}'.format(lot.quantity) }}</td>
+          <td>
+            {{ money3(lot.unit_price_milli) }}
+            {% if lot.sale_rate %}<small>{{ lot.sale_rate }}% off · {{ money3(lot.effective_milli) }}</small>{% endif %}
+          </td>
+          <td class="where">{{ lot.where_label }}</td>
+          <td class="desc">{{ lot.description }}</td>
+          <td class="clip">{{ lot.remarks }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+  {% endfor %}
+  {% if result.pages > 1 %}
+  <p class="pager">
+    {% if result.page > 1 %}
+    <a href="{{ url_for('inventory_duplicates', q=filters.q, price=filters.price, page=result.page - 1) }}">Previous</a>
+    {% endif %}
+    <span>Page {{ result.page }} of {{ result.pages }}</span>
+    {% if result.page < result.pages %}
+    <a href="{{ url_for('inventory_duplicates', q=filters.q, price=filters.price, page=result.page + 1) }}">Next</a>
+    {% endif %}
+  </p>
+  {% endif %}
+  {% else %}
+  <p class="empty">No duplicate groups match.</p>
+  {% endif %}
+</section>
+<script>
+  document.querySelectorAll("form.sync-form").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      const message = form.dataset.confirm;
+      if (message && !window.confirm(message)) {
+        event.preventDefault();
+        return;
+      }
+      const button = form.querySelector("button");
+      if (button) {
+        button.disabled = true;
+        button.textContent = form.dataset.busy || "Updating…";
+      }
+      const status = form.querySelector(".import-status");
+      if (status) status.hidden = false;
+    });
+  });
+</script>
+{% endblock %}
