@@ -32,6 +32,7 @@
     {% elif nav_section == 'inventory' %}
     <nav class="subnav" aria-label="Inventory">
       <a class="{{ 'is-here' if request.endpoint in ['inventory', 'inventory_detail'] else '' }}" href="{{ url_for('inventory') }}">Store</a>
+      <a class="{{ 'is-here' if request.endpoint == 'inventory_drawers' else '' }}" href="{{ url_for('inventory_drawers') }}">Drawers</a>
       <a class="{{ 'is-here' if request.endpoint == 'inventory_storage' else '' }}" href="{{ url_for('inventory_storage') }}">Storage</a>
       <a class="{{ 'is-here' if request.endpoint == 'inventory_duplicates' else '' }}" href="{{ url_for('inventory_duplicates') }}">Duplicates</a>
     </nav>

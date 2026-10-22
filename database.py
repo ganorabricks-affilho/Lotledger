@@ -1,5 +1,6 @@
 import calendar
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -226,6 +227,27 @@ CREATE TABLE IF NOT EXISTS minifig_price_guide (
     fetched_at TEXT NOT NULL,
     PRIMARY KEY (fig_id, guide_type, new_or_used, currency_code)
 );
+
+CREATE TABLE IF NOT EXISTS drawer_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL,
+    max_items INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_drawer_categories_name
+    ON drawer_categories(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS drawer_assignments (
+    drawer_code TEXT PRIMARY KEY,
+    category_id INTEGER NOT NULL REFERENCES drawer_categories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS bl_categories (
+    category_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
 """
 
 
@@ -241,6 +263,7 @@ def init_db() -> None:
     added_packing = False
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _seed_drawer_categories(conn)
         cols = {row[1] for row in conn.execute("PRAGMA table_info(lots)")}
         if "tax_cents" not in cols:
             conn.execute("ALTER TABLE lots ADD COLUMN tax_cents INTEGER NOT NULL DEFAULT 0")
@@ -2557,6 +2580,7 @@ def list_store_inventory(
     condition: str = "",
     stock: str = "",
     remark: Optional[str] = None,
+    drawer: str = "",
     sort: str = "age",
     direction: str = "asc",
     page: int = 1,
@@ -2584,6 +2608,14 @@ def list_store_inventory(
     if remark is not None:
         clauses.append("remarks = ?")
         params.append(remark)
+    code = (drawer or "").strip().upper()
+    if code:
+        # AA-01, AA-01-A, and AA-01-2 are the same drawer. AA-10 is not.
+        clauses.append(
+            "UPPER(SUBSTR(remarks, 1, 5)) = ? "
+            "AND UPPER(remarks) GLOB '[A-Z][A-Z]-[0-9][0-9]*'"
+        )
+        params.append(code)
     if stock == "for_sale":
         clauses.append("is_retain = 0 AND is_stock_room = 0")
     elif stock == "retain":
@@ -2635,6 +2667,269 @@ STORAGE_SORTS = {
     "lots": "lots {dir}, remarks COLLATE NOCASE",
     "pieces": "pieces {dir}, remarks COLLATE NOCASE",
 }
+
+
+_DRAWER_CODE = re.compile(r"^[A-Z]{2}-\d{2}$")
+
+
+def drawer_quantities() -> dict[str, dict]:
+    """Pieces and lots keyed by drawer code.
+
+    The drawer is the column/row at the start of a remark, such as AA-01.
+    Anything after that (AA-01-A, AA-01-2) stays in the same drawer.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT UPPER(SUBSTR(remarks, 1, 5)) AS drawer,
+                   COUNT(*) AS lots,
+                   COALESCE(SUM(quantity), 0) AS pieces
+            FROM store_inventory
+            WHERE is_stock_room = 0
+              AND UPPER(remarks) GLOB '[A-Z][A-Z]-[0-9][0-9]*'
+            GROUP BY drawer
+            """
+        ).fetchall()
+    return {
+        row["drawer"]: {"lots": int(row["lots"]), "pieces": int(row["pieces"])}
+        for row in rows
+        if _DRAWER_CODE.fullmatch(row["drawer"] or "")
+    }
+
+
+def bl_category_names() -> dict[str, str]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT category_id, name FROM bl_categories").fetchall()
+    return {row["category_id"]: row["name"] for row in rows}
+
+
+def replace_bl_categories(rows: list) -> None:
+    prepared = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        category_id = str(row.get("category_id") or "").strip()
+        name = " ".join(str(row.get("category_name") or "").split())
+        if category_id and name:
+            prepared.append((category_id, name))
+    if not prepared:
+        return
+    with get_conn() as conn:
+        conn.executemany(
+            """
+            INSERT INTO bl_categories(category_id, name)
+            VALUES (?, ?)
+            ON CONFLICT(category_id) DO UPDATE SET name = excluded.name
+            """,
+            prepared,
+        )
+
+
+def drawer_part_groups() -> dict[str, list]:
+    """Lots in each drawer, grouped by BrickLink item type and catalog category."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT UPPER(SUBSTR(remarks, 1, 5)) AS drawer,
+                   item_type,
+                   category_id,
+                   COUNT(*) AS lots,
+                   COALESCE(SUM(quantity), 0) AS pieces
+            FROM store_inventory
+            WHERE is_stock_room = 0
+              AND UPPER(remarks) GLOB '[A-Z][A-Z]-[0-9][0-9]*'
+            GROUP BY drawer, item_type, category_id
+            """
+        ).fetchall()
+    grouped = {}
+    for row in rows:
+        code = row["drawer"] or ""
+        if not _DRAWER_CODE.fullmatch(code):
+            continue
+        grouped.setdefault(code, []).append(
+            {
+                "item_type": row["item_type"] or "",
+                "category_id": str(row["category_id"] or ""),
+                "lots": int(row["lots"]),
+                "pieces": int(row["pieces"]),
+            }
+        )
+    return grouped
+
+
+_SEED_DRAWER_CATEGORIES = (
+    ("Minifigures Heads", "#8fc47a", 144),
+    ("Minifigure Torsos", "#c45c8c", 40),
+    ("Minifigure Legs", "#e69138", 40),
+    ("Minifigure Headgear", "#3d85c6", 40),
+    ("Minifigure Hair", "#8e7cc3", 40),
+)
+
+
+def _seed_category_index(column: str, row: int) -> Optional[int]:
+    """Original part map: heads, torsos, legs, headgear, hair."""
+    if column == "AI" and row <= 10:
+        return 0
+    if column in {"AI", "AJ"}:
+        return 1
+    if column == "AK" or (column == "AL" and row <= 2):
+        return 2
+    if column == "AL":
+        return 3
+    if column == "AM" and row <= 8:
+        return 4
+    return None
+
+
+def _seed_drawer_categories(conn: sqlite3.Connection) -> None:
+    existing = conn.execute("SELECT COUNT(*) AS n FROM drawer_categories").fetchone()["n"]
+    if existing:
+        return
+    ids = []
+    for order, (name, color, max_items) in enumerate(_SEED_DRAWER_CATEGORIES, start=1):
+        cursor = conn.execute(
+            """
+            INSERT INTO drawer_categories(name, color, max_items, sort_order)
+            VALUES (?, ?, ?, ?)
+            """,
+            (name, color, max_items, order),
+        )
+        ids.append(cursor.lastrowid)
+    for letters, rows in (("ABCDEFGH", range(1, 15)), ("IJKLMNOP", range(1, 17))):
+        for letter in letters:
+            column = f"A{letter}"
+            for row in rows:
+                index = _seed_category_index(column, row)
+                if index is None:
+                    continue
+                conn.execute(
+                    "INSERT INTO drawer_assignments(drawer_code, category_id) VALUES (?, ?)",
+                    (f"{column}-{row:02d}", ids[index]),
+                )
+
+
+def drawer_ink(color: str) -> str:
+    hex_color = color.lstrip("#")
+    red = int(hex_color[0:2], 16)
+    green = int(hex_color[2:4], 16)
+    blue = int(hex_color[4:6], 16)
+    luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255
+    return "#ffffff" if luminance < 0.4 else "#1a1a1a"
+
+
+def list_drawer_categories() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, color, max_items, sort_order
+            FROM drawer_categories
+            ORDER BY sort_order, name COLLATE NOCASE, id
+            """
+        ).fetchall()
+    categories = []
+    for row in rows:
+        item = dict(row)
+        item["ink"] = drawer_ink(item["color"])
+        categories.append(item)
+    return categories
+
+
+def drawer_category_assignments() -> dict[str, int]:
+    """Drawer code -> category id. Unlisted drawers are not assigned."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT drawer_code, category_id FROM drawer_assignments").fetchall()
+    return {row["drawer_code"]: int(row["category_id"]) for row in rows}
+
+
+def _drawer_category_fields(name: str, color: str, max_items: Optional[int]) -> tuple:
+    label = " ".join((name or "").split())
+    if not label:
+        raise ValueError("Name the category.")
+    if len(label) > 40:
+        raise ValueError("Keep the category name to 40 characters.")
+    paint = (color or "").strip().lower()
+    if not re.fullmatch(r"#[0-9a-f]{6}", paint):
+        raise ValueError("Pick a color.")
+    if max_items is not None and int(max_items) < 1:
+        raise ValueError("Max each has to be at least 1.")
+    return label, paint, max_items
+
+
+def create_drawer_category(name: str, color: str, max_items: Optional[int]) -> dict:
+    label, paint, max_items = _drawer_category_fields(name, color, max_items)
+    with get_conn() as conn:
+        order = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM drawer_categories"
+        ).fetchone()["n"]
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO drawer_categories(name, color, max_items, sort_order)
+                VALUES (?, ?, ?, ?)
+                """,
+                (label, paint, max_items, order),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("That category already exists.") from exc
+        category_id = int(cursor.lastrowid)
+    return {
+        "id": category_id,
+        "name": label,
+        "color": paint,
+        "max_items": max_items,
+        "ink": drawer_ink(paint),
+    }
+
+
+def update_drawer_category(category_id: int, name: str, color: str, max_items: Optional[int]) -> dict:
+    """Change a part's name, color, and max. Drawer assignments stay as they are."""
+    label, paint, max_items = _drawer_category_fields(name, color, max_items)
+    with get_conn() as conn:
+        found = conn.execute(
+            "SELECT id FROM drawer_categories WHERE id = ?",
+            (int(category_id),),
+        ).fetchone()
+        if found is None:
+            raise ValueError("That category is not available.")
+        try:
+            conn.execute(
+                """
+                UPDATE drawer_categories
+                SET name = ?, color = ?, max_items = ?
+                WHERE id = ?
+                """,
+                (label, paint, max_items, int(category_id)),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("That category already exists.") from exc
+    return {
+        "id": int(category_id),
+        "name": label,
+        "color": paint,
+        "max_items": max_items,
+        "ink": drawer_ink(paint),
+    }
+
+
+def assign_drawer_category(code: str, category_id: Optional[int]) -> None:
+    with get_conn() as conn:
+        if category_id is None:
+            conn.execute("DELETE FROM drawer_assignments WHERE drawer_code = ?", (code,))
+            return
+        found = conn.execute(
+            "SELECT id FROM drawer_categories WHERE id = ?",
+            (int(category_id),),
+        ).fetchone()
+        if found is None:
+            raise ValueError("That category is not available.")
+        conn.execute(
+            """
+            INSERT INTO drawer_assignments(drawer_code, category_id)
+            VALUES (?, ?)
+            ON CONFLICT(drawer_code) DO UPDATE SET category_id = excluded.category_id
+            """,
+            (code, int(category_id)),
+        )
 
 
 def list_inventory_storage(q: str = "", sort: str = "remark", direction: str = "asc") -> dict:

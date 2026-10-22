@@ -1,0 +1,523 @@
+{% extends "base.html" %}
+{% block title %}Drawers · Inventory · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page drawer-page">
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Inventory</p>
+      <h1>Drawers</h1>
+      <p class="lede">Piece counts from BrickLink remarks. <strong>AA-01-A</strong> and <strong>AA-01-2</strong> both belong to drawer AA-01. Rest on a drawer to see what's inside. Right-click to assign a part, or edit a part below.</p>
+    </div>
+  </div>
+
+  <div class="stats compact">
+    <article>
+      <span>Drawers</span>
+      <strong>{{ '{:,}'.format(board.drawers) }}</strong>
+      <em>{{ '{:,}'.format(board.filled) }} with parts</em>
+    </article>
+    <article>
+      <span>Pieces</span>
+      <strong>{{ '{:,}'.format(board.pieces) }}</strong>
+      <em>on this map</em>
+    </article>
+    <article>
+      <span>Lots</span>
+      <strong>{{ '{:,}'.format(board.lots) }}</strong>
+      <em>BrickLink listings in those drawers</em>
+    </article>
+  </div>
+
+  <div class="drawer-scroll">
+    <div class="drawer-map">
+      {% for stack in board.cabinets %}
+      <div class="cabinet-stack">
+        {% for block in stack %}
+        <div class="cabinet-block{{ ' has-large' if block.tall else '' }}">
+          {% for row in block.rows %}
+            {% for cell in row %}
+            <a class="drawer{{ ' tone-tbd' if not cell.category_id else '' }}"
+               {% if cell.category_id %}style="background: {{ cell.color }}; color: {{ cell.ink }}"{% endif %}
+               href="{{ url_for('inventory', drawer=cell.code) }}"
+               data-code="{{ cell.code }}"
+               data-category="{{ cell.category_id or '' }}"
+               data-pieces="{{ cell.pieces }}"
+               data-lots="{{ cell.lots }}">
+              <span>{{ cell.code }}</span>
+              <strong class="{{ 'is-empty' if cell.pieces == 0 else '' }}">{{ '{:,}'.format(cell.pieces) }}</strong>
+            </a>
+            {% endfor %}
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel drawer-legend">
+    <h2>Parts</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Color</th>
+          <th>Part</th>
+          <th class="num">Drawers</th>
+          <th class="num">Pieces</th>
+          <th class="num">Max each</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for part in board.legend %}
+        <tr data-category="{{ part.id or '' }}">
+          <td><span class="swatch" {% if part.color %}style="background: {{ part.color }}"{% endif %}></span></td>
+          <td class="legend-name">{{ part.name }}</td>
+          <td class="num legend-drawers">{{ '{:,}'.format(part.drawers) }}</td>
+          <td class="num legend-pieces">{{ '{:,}'.format(part.pieces) }}</td>
+          <td class="num legend-max">{% if part.max_items %}{{ '{:,}'.format(part.max_items) }}{% else %}—{% endif %}</td>
+          <td class="legend-actions">{% if part.id %}<button type="button" class="legend-edit">Edit</button>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <form class="drawer-edit" id="drawer-edit" hidden>
+      <p class="drawer-edit-title"></p>
+      <label>Name
+        <input name="name" maxlength="40" required>
+      </label>
+      <label>Color
+        <input name="color" type="color">
+      </label>
+      <label>Max each
+        <input name="max_items" type="number" min="1" inputmode="numeric" placeholder="optional">
+      </label>
+      <div class="drawer-edit-actions">
+        <button type="submit">Save category</button>
+        <button type="button" class="drawer-edit-cancel ghost">Cancel</button>
+      </div>
+      <p class="drawer-menu-error" hidden></p>
+    </form>
+  </div>
+
+  <div class="drawer-menu" id="drawer-menu" hidden>
+    <p class="drawer-menu-code"></p>
+    <div class="drawer-menu-list"></div>
+    <button type="button" class="drawer-menu-new">New category…</button>
+    <form class="drawer-menu-form" hidden>
+      <label>Name
+        <input name="name" maxlength="40" required placeholder="Minifigure arms">
+      </label>
+      <label>Color
+        <input name="color" type="color" value="#5c6bc0">
+      </label>
+      <label>Max each
+        <input name="max_items" type="number" min="1" inputmode="numeric" placeholder="optional">
+      </label>
+      <button type="submit">Create and assign</button>
+    </form>
+    <p class="drawer-menu-error" hidden></p>
+  </div>
+  <div class="drawer-peek" id="drawer-peek" hidden>
+    <p class="drawer-peek-code"></p>
+    <p class="drawer-peek-assigned"></p>
+    <p class="drawer-peek-count"></p>
+    <div class="drawer-peek-list"></div>
+  </div>
+  <script type="application/json" id="drawer-menu-data">{{ {
+    "categories": board.categories,
+    "contents": board.contents,
+    "assignUrl": url_for("inventory_drawer_assign"),
+    "createUrl": url_for("inventory_drawer_category"),
+    "updateUrl": url_for("inventory_drawer_category_update", category_id=0)
+  }|tojson }}</script>
+  <script>
+    const menuData = JSON.parse(document.getElementById("drawer-menu-data").textContent);
+    const menu = document.getElementById("drawer-menu");
+    const menuCode = menu.querySelector(".drawer-menu-code");
+    const menuList = menu.querySelector(".drawer-menu-list");
+    const menuForm = menu.querySelector(".drawer-menu-form");
+    const menuError = menu.querySelector(".drawer-menu-error");
+    let categories = menuData.categories.slice();
+    let currentDrawer = null;
+    let menuPoint = {x: 8, y: 8};
+
+    function fitMenu() {
+      const margin = 8;
+      menuList.style.maxHeight = "";
+      const limit = window.innerHeight - margin * 2;
+      if (menu.offsetHeight > limit) {
+        const shrink = menu.offsetHeight - limit;
+        menuList.style.maxHeight = Math.max(120, menuList.clientHeight - shrink) + "px";
+        menuList.scrollTop = menuList.scrollHeight;
+      }
+      menu.style.left = Math.max(margin, Math.min(menuPoint.x, window.innerWidth - menu.offsetWidth - margin)) + "px";
+      menu.style.top = Math.max(margin, Math.min(menuPoint.y, window.innerHeight - menu.offsetHeight - margin)) + "px";
+    }
+
+    function formatCount(value) {
+      return Number(value).toLocaleString("en-US");
+    }
+
+    function legendRow(categoryId) {
+      return document.querySelector('.drawer-legend tr[data-category="' + categoryId + '"]');
+    }
+
+    function shiftLegend(categoryId, pieces, direction) {
+      const row = legendRow(categoryId);
+      if (!row) return;
+      const drawersCell = row.querySelector(".legend-drawers");
+      const piecesCell = row.querySelector(".legend-pieces");
+      drawersCell.textContent = formatCount(Number(drawersCell.textContent.replace(/,/g, "")) + direction);
+      piecesCell.textContent = formatCount(Number(piecesCell.textContent.replace(/,/g, "")) + direction * pieces);
+    }
+
+    function paintDrawer(drawer, category) {
+      const previous = drawer.dataset.category || "";
+      const pieces = Number(drawer.dataset.pieces);
+      const lots = Number(drawer.dataset.lots);
+      if (previous !== String(category ? category.id : "")) {
+        shiftLegend(previous, pieces, -1);
+        shiftLegend(category ? category.id : "", pieces, 1);
+      }
+      drawer.dataset.category = category ? String(category.id) : "";
+      if (category) {
+        drawer.classList.remove("tone-tbd");
+        drawer.style.background = category.color;
+        drawer.style.color = category.ink;
+      } else {
+        drawer.classList.add("tone-tbd");
+        drawer.style.background = "";
+        drawer.style.color = "";
+      }
+    }
+
+    function addLegendRow(category) {
+      const unassigned = legendRow("");
+      const row = document.createElement("tr");
+      row.dataset.category = String(category.id);
+      row.dataset.lots = "0";
+      row.innerHTML = '<td><span class="swatch"></span></td>'
+        + '<td class="legend-name"></td>'
+        + '<td class="num legend-drawers">0</td>'
+        + '<td class="num legend-pieces">0</td>'
+        + '<td class="num legend-max"></td>'
+        + '<td class="legend-actions"><button type="button" class="legend-edit">Edit</button></td>';
+      row.querySelector(".swatch").style.background = category.color;
+      row.querySelector(".legend-name").textContent = category.name;
+      row.querySelector(".legend-max").textContent = category.max_items ? formatCount(category.max_items) : "—";
+      unassigned.parentNode.insertBefore(row, unassigned);
+    }
+
+    function renderMenu() {
+      menuList.replaceChildren();
+      const none = document.createElement("button");
+      none.type = "button";
+      none.className = "drawer-menu-choice";
+      none.dataset.category = "";
+      none.textContent = "Not assigned";
+      menuList.append(none);
+      categories.forEach((category) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "drawer-menu-choice";
+        button.dataset.category = String(category.id);
+        const swatch = document.createElement("span");
+        swatch.className = "swatch";
+        swatch.style.background = category.color;
+        button.append(swatch, document.createTextNode(category.name));
+        menuList.append(button);
+      });
+      const selected = currentDrawer ? currentDrawer.dataset.category || "" : "";
+      menuList.querySelectorAll(".drawer-menu-choice").forEach((button) => {
+        button.classList.toggle("is-current", button.dataset.category === selected);
+      });
+    }
+
+    const peek = document.getElementById("drawer-peek");
+    const peekStop = new Set(["minifigure", "minifigures", "minifig", "part", "parts", "new", "the", "and", "with"]);
+    let peekDrawer = null;
+    let peekTimer = null;
+
+    function hidePeek() {
+      clearTimeout(peekTimer);
+      peekTimer = null;
+      peek.hidden = true;
+      peekDrawer = null;
+    }
+
+    function peekTokens(name) {
+      return (name.toLowerCase().match(/[a-z0-9]+/g) || []).filter((word) => {
+        return word.length >= 4 && !peekStop.has(word);
+      });
+    }
+
+    function peekFits(tokens, label) {
+      const words = label.toLowerCase().match(/[a-z0-9]+/g) || [];
+      return tokens.some((token) => words.some((word) => {
+        const short = token.length < word.length ? token : word;
+        const long = token.length < word.length ? word : token;
+        return short.length >= 4 && long.startsWith(short);
+      }));
+    }
+
+    function placePeek(drawer) {
+      const margin = 8;
+      const rect = drawer.getBoundingClientRect();
+      const width = peek.offsetWidth;
+      const height = peek.offsetHeight;
+      let left = rect.right + margin;
+      if (left + width > window.innerWidth - margin) left = rect.left - width - margin;
+      left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+      let top = rect.top;
+      if (top + height > window.innerHeight - margin) top = window.innerHeight - height - margin;
+      peek.style.left = left + "px";
+      peek.style.top = Math.max(margin, top) + "px";
+    }
+
+    function showPeek(drawer) {
+      if (!menu.hidden) return;
+      const rows = (menuData.contents[drawer.dataset.code] || []).slice();
+      const categoryId = drawer.dataset.category || "";
+      const category = categories.find((item) => String(item.id) === categoryId);
+      const assigned = category ? category.name : "Not assigned";
+      const tokens = peekTokens(assigned);
+      const comparable = tokens.length > 0 && rows.some((row) => peekFits(tokens, row.name));
+      peek.querySelector(".drawer-peek-code").textContent = drawer.dataset.code;
+      peek.querySelector(".drawer-peek-assigned").textContent = "Drawer: " + assigned;
+      peek.querySelector(".drawer-peek-count").textContent =
+        formatCount(drawer.dataset.pieces) + " pieces · " + formatCount(drawer.dataset.lots) + " lots";
+      const list = peek.querySelector(".drawer-peek-list");
+      list.replaceChildren();
+      if (!rows.length) {
+        const empty = document.createElement("p");
+        empty.className = "drawer-peek-empty";
+        empty.textContent = "No parts in this drawer.";
+        list.append(empty);
+      } else {
+        rows.forEach((row) => {
+          const off = comparable && !peekFits(tokens, row.name);
+          const line = document.createElement("div");
+          line.className = "drawer-peek-row" + (off ? " is-off" : "");
+          const name = document.createElement("span");
+          name.textContent = row.name;
+          const count = document.createElement("strong");
+          count.textContent = formatCount(row.pieces);
+          line.append(name, count);
+          list.append(line);
+        });
+        if (comparable && rows.some((row) => !peekFits(tokens, row.name))) {
+          const note = document.createElement("p");
+          note.className = "drawer-peek-note";
+          note.textContent = "Marked rows don't match this drawer.";
+          list.append(note);
+        }
+      }
+      peek.hidden = false;
+      placePeek(drawer);
+    }
+
+    document.querySelector(".drawer-map").addEventListener("mouseover", (event) => {
+      const drawer = event.target.closest(".drawer");
+      if (!drawer || drawer === peekDrawer) return;
+      clearTimeout(peekTimer);
+      peek.hidden = true;
+      peekDrawer = drawer;
+      peekTimer = setTimeout(() => showPeek(drawer), 1000);
+    });
+
+    document.querySelector(".drawer-map").addEventListener("mouseout", (event) => {
+      const drawer = event.target.closest(".drawer");
+      if (!drawer || drawer !== peekDrawer) return;
+      const next = event.relatedTarget;
+      if (next && (drawer.contains(next) || peek.contains(next))) return;
+      hidePeek();
+    });
+
+    peek.addEventListener("mouseout", (event) => {
+      const next = event.relatedTarget;
+      if (next && (peek.contains(next) || (peekDrawer && peekDrawer.contains(next)))) return;
+      hidePeek();
+    });
+
+    function closeMenu() {
+      menu.hidden = true;
+      menuForm.hidden = true;
+      menuError.hidden = true;
+      currentDrawer = null;
+    }
+
+    function openMenu(drawer, x, y) {
+      hidePeek();
+      currentDrawer = drawer;
+      menuCode.textContent = drawer.dataset.code;
+      menuForm.reset();
+      menuForm.hidden = true;
+      menuError.hidden = true;
+      renderMenu();
+      menu.hidden = false;
+      menuPoint = {x: x, y: y};
+      fitMenu();
+    }
+
+    async function postJson(url, body) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Could not save that.");
+      return payload;
+    }
+
+    document.querySelector(".drawer-map").addEventListener("contextmenu", (event) => {
+      const drawer = event.target.closest(".drawer");
+      if (!drawer) return;
+      event.preventDefault();
+      openMenu(drawer, event.clientX, event.clientY);
+    });
+
+    menuList.addEventListener("click", async (event) => {
+      const button = event.target.closest(".drawer-menu-choice");
+      if (!button || !currentDrawer) return;
+      const drawer = currentDrawer;
+      const categoryId = button.dataset.category;
+      const category = categories.find((item) => String(item.id) === categoryId) || null;
+      button.disabled = true;
+      try {
+        await postJson(menuData.assignUrl, {
+          drawer: drawer.dataset.code,
+          category_id: categoryId || null,
+        });
+        paintDrawer(drawer, category);
+        closeMenu();
+      } catch (error) {
+        menuError.textContent = error.message;
+        menuError.hidden = false;
+        button.disabled = false;
+      }
+    });
+
+    menu.querySelector(".drawer-menu-new").addEventListener("click", () => {
+      menuForm.hidden = false;
+      menuError.hidden = true;
+      fitMenu();
+      menuForm.elements.name.focus();
+    });
+
+    menuForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!currentDrawer) return;
+      const drawer = currentDrawer;
+      const submit = menuForm.querySelector("button[type=submit]");
+      submit.disabled = true;
+      menuError.hidden = true;
+      const maxField = menuForm.elements.max_items.value.trim();
+      try {
+        const payload = await postJson(menuData.createUrl, {
+          drawer: drawer.dataset.code,
+          name: menuForm.elements.name.value,
+          color: menuForm.elements.color.value,
+          max_items: maxField,
+        });
+        categories.push(payload.category);
+        addLegendRow(payload.category);
+        paintDrawer(drawer, payload.category);
+        closeMenu();
+      } catch (error) {
+        menuError.textContent = error.message;
+        menuError.hidden = false;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    document.addEventListener("mousedown", (event) => {
+      if (!menu.hidden && !menu.contains(event.target)) closeMenu();
+    });
+    const editForm = document.getElementById("drawer-edit");
+    const editError = editForm.querySelector(".drawer-menu-error");
+    let editingId = null;
+
+    function applyCategory(category) {
+      const index = categories.findIndex((item) => String(item.id) === String(category.id));
+      if (index >= 0) categories[index] = category;
+      const row = legendRow(category.id);
+      if (row) {
+        row.querySelector(".swatch").style.background = category.color;
+        row.querySelector(".legend-name").textContent = category.name;
+        row.querySelector(".legend-max").textContent = category.max_items ? formatCount(category.max_items) : "—";
+      }
+      document.querySelectorAll('.drawer[data-category="' + category.id + '"]').forEach((drawer) => {
+        paintDrawer(drawer, category);
+      });
+    }
+
+    function closeEdit() {
+      editForm.hidden = true;
+      editError.hidden = true;
+      editingId = null;
+    }
+
+    function openEdit(category) {
+      closeMenu();
+      editingId = category.id;
+      editForm.querySelector(".drawer-edit-title").textContent = "Edit " + category.name;
+      editForm.elements.name.value = category.name;
+      editForm.elements.color.value = category.color;
+      editForm.elements.max_items.value = category.max_items || "";
+      editError.hidden = true;
+      editForm.hidden = false;
+      editForm.scrollIntoView({block: "nearest"});
+      editForm.elements.name.focus();
+    }
+
+    document.querySelector(".drawer-legend").addEventListener("click", (event) => {
+      const button = event.target.closest(".legend-edit");
+      if (!button) return;
+      const row = button.closest("tr");
+      const category = categories.find((item) => String(item.id) === row.dataset.category);
+      if (category) openEdit(category);
+    });
+
+    editForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!editingId) return;
+      const submit = editForm.querySelector("button[type=submit]");
+      submit.disabled = true;
+      editError.hidden = true;
+      const maxField = editForm.elements.max_items.value.trim();
+      const url = menuData.updateUrl.replace(/\/0$/, "/" + editingId);
+      try {
+        const payload = await postJson(url, {
+          name: editForm.elements.name.value,
+          color: editForm.elements.color.value,
+          max_items: maxField,
+        });
+        applyCategory(payload.category);
+        closeEdit();
+      } catch (error) {
+        editError.textContent = error.message;
+        editError.hidden = false;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    editForm.querySelector(".drawer-edit-cancel").addEventListener("click", closeEdit);
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeMenu();
+        closeEdit();
+        hidePeek();
+      }
+    });
+    window.addEventListener("scroll", () => {
+      closeMenu();
+      hidePeek();
+    }, true);
+  </script>
+</section>
+{% endblock %}

@@ -66,6 +66,9 @@
     {% if filters.remark is not none %}
     <input type="hidden" name="remark" value="{{ filters.remark }}">
     {% endif %}
+    {% if filters.drawer %}
+    <input type="hidden" name="drawer" value="{{ filters.drawer }}">
+    {% endif %}
     <button type="submit">Filter</button>
     {% if filters_active %}
     <a class="btn ghost" href="{{ url_for('inventory') }}">Clear</a>
@@ -73,7 +76,7 @@
   </form>
 
   {% if items %}
-  <p class="lede pager-note">{{ '{:,}'.format(result.total) }} listing{{ 's' if result.total != 1 else '' }}{% if filters.remark is not none %} in {{ filters.remark or 'no remark' }}{% elif filters_active %} match{% endif %}{% if result.pages > 1 %} · page {{ result.page }} of {{ result.pages }}{% endif %}</p>
+  <p class="lede pager-note">{{ '{:,}'.format(result.total) }} listing{{ 's' if result.total != 1 else '' }}{% if filters.drawer %} in drawer {{ filters.drawer }}{% elif filters.remark is not none %} in {{ filters.remark or 'no remark' }}{% elif filters_active %} match{% endif %}{% if result.pages > 1 %} · page {{ result.page }} of {{ result.pages }}{% endif %}</p>
   <div class="panel">
     <div class="table-scroll wide">
       <table>
@@ -83,7 +86,7 @@
             {% for key, label in [('item', 'Item'), ('color', 'Color'), ('cond', 'Cond'), ('qty', 'Qty'), ('price', 'Price'), ('age', 'Age'), ('remarks', 'Remarks')] %}
             {% set next_dir = 'desc' if filters.sort == key and filters.dir == 'asc' else 'asc' %}
             <th class="{{ 'is-sorted' if filters.sort == key else '' }}"{% if filters.sort == key %} aria-sort="{{ 'ascending' if filters.dir == 'asc' else 'descending' }}"{% endif %}>
-              <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, sort=key, dir=next_dir) }}">{{ label }}{% if filters.sort == key %} {{ '↑' if filters.dir == 'asc' else '↓' }}{% endif %}</a>
+              <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, drawer=filters.drawer or none, sort=key, dir=next_dir) }}">{{ label }}{% if filters.sort == key %} {{ '↑' if filters.dir == 'asc' else '↓' }}{% endif %}</a>
             </th>
             {% endfor %}
           </tr>
@@ -123,11 +126,11 @@
   {% if result.pages > 1 %}
   <p class="pager">
     {% if result.page > 1 %}
-    <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, sort=filters.sort, dir=filters.dir, page=result.page - 1) }}">Previous</a>
+    <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, drawer=filters.drawer or none, sort=filters.sort, dir=filters.dir, page=result.page - 1) }}">Previous</a>
     {% endif %}
     <span>Page {{ result.page }} of {{ result.pages }}</span>
     {% if result.page < result.pages %}
-    <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, sort=filters.sort, dir=filters.dir, page=result.page + 1) }}">Next</a>
+    <a href="{{ url_for('inventory', q=filters.q, item_type=filters.item_type, condition=filters.condition, remark=filters.remark, drawer=filters.drawer or none, sort=filters.sort, dir=filters.dir, page=result.page + 1) }}">Next</a>
     {% endif %}
   </p>
   {% endif %}

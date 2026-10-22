@@ -40,6 +40,7 @@ def _nav_section() -> str:
         "inventory_sync_apply",
         "inventory_sync_reject",
         "inventory_storage",
+        "inventory_drawers",
     }:
         return "inventory"
     if endpoint in {"forge", "forge_parts"}:
@@ -673,12 +674,21 @@ def _inventory_filters() -> dict:
     remark = request.args.get("remark")
     if remark is not None:
         remark = remark.strip()
+    drawer = (request.args.get("drawer") or "").strip().upper()
+    if (
+        len(drawer) != 5
+        or drawer[2] != "-"
+        or not drawer[:2].isalpha()
+        or not drawer[3:].isdigit()
+    ):
+        drawer = ""
     return {
         "q": (request.args.get("q") or "").strip(),
         "item_type": (request.args.get("item_type") or "").strip(),
         "condition": condition,
         "stock": stock,
         "remark": remark,
+        "drawer": drawer,
         "sort": sort,
         "dir": direction,
         "page": max(1, page),
@@ -694,6 +704,7 @@ def inventory():
         condition=filters["condition"],
         stock=filters["stock"],
         remark=filters["remark"],
+        drawer=filters["drawer"],
         sort=filters["sort"],
         direction=filters["dir"],
         page=filters["page"],
@@ -709,11 +720,206 @@ def inventory():
         summary=db.inventory_summary(),
         type_labels=bricklink.ITEM_TYPE_LABELS,
         filters_active=any(
-            filters[key] for key in ("q", "item_type", "condition", "stock")
+            filters[key] for key in ("q", "item_type", "condition", "stock", "drawer")
         )
         or filters["remark"] is not None,
         pending_sync=db.pending_inventory_sync(),
     )
+
+
+# Left cabinet is AA–AH, rows 01–07 then 08–14. Right cabinet is AI–AP,
+# rows 01–08 then 09–16. Part colors come from saved drawer assignments.
+_DRAWER_COLUMNS = {
+    "left": [f"A{letter}" for letter in "ABCDEFGH"],
+    "right": [f"A{letter}" for letter in "IJKLMNOP"],
+}
+_DRAWER_BLOCKS = {
+    "left": (range(1, 8), range(8, 15)),
+    "right": (range(1, 9), range(9, 17)),
+}
+
+
+def _on_drawer_map(code: str) -> bool:
+    text = (code or "").strip().upper()
+    if len(text) != 5 or text[2] != "-" or not text[:2].isalpha() or not text[3:].isdigit():
+        return False
+    column, row = text[:2], int(text[3:])
+    if column in _DRAWER_COLUMNS["left"]:
+        return 1 <= row <= 14
+    if column in _DRAWER_COLUMNS["right"]:
+        return 1 <= row <= 16
+    return False
+
+
+def _bl_category_names() -> dict:
+    names = db.bl_category_names()
+    if names or not db.has_bricklink_creds():
+        return names
+    try:
+        rows = bricklink.list_categories(bricklink.creds_from_settings(db.get_setting))
+    except ValueError:
+        return {}
+    db.replace_bl_categories(rows)
+    return db.bl_category_names()
+
+
+def _peek_label(group: dict, names: dict) -> str:
+    catalog = names.get(group["category_id"]) or ""
+    kind = bricklink.ITEM_TYPE_LABELS.get(group["item_type"], group["item_type"] or "Part")
+    if catalog and group["item_type"] == "PART":
+        return catalog
+    if catalog:
+        return f"{kind} · {catalog}"
+    return kind or "Other"
+
+
+def _drawer_board() -> dict:
+    counts = db.drawer_quantities()
+    part_groups = db.drawer_part_groups()
+    catalog_names = _bl_category_names()
+    categories = db.list_drawer_categories()
+    assignments = db.drawer_category_assignments()
+    legend = {
+        category["id"]: {**category, "drawers": 0, "pieces": 0, "lots": 0}
+        for category in categories
+    }
+    unassigned = {
+        "id": None,
+        "name": "Not assigned",
+        "color": "",
+        "ink": "#1a1a1a",
+        "max_items": None,
+        "drawers": 0,
+        "pieces": 0,
+        "lots": 0,
+    }
+    cabinets = []
+    contents = {}
+    pieces = lots = filled = 0
+    for side in ("left", "right"):
+        blocks = []
+        for rows in _DRAWER_BLOCKS[side]:
+            grid = []
+            for row in rows:
+                line = []
+                for column in _DRAWER_COLUMNS[side]:
+                    code = f"{column}-{row:02d}"
+                    counted = counts.get(code, {"pieces": 0, "lots": 0})
+                    category = legend.get(assignments.get(code))
+                    bucket = category or unassigned
+                    bucket["drawers"] += 1
+                    bucket["pieces"] += counted["pieces"]
+                    bucket["lots"] += counted["lots"]
+                    pieces += counted["pieces"]
+                    lots += counted["lots"]
+                    if counted["pieces"]:
+                        filled += 1
+                    contents[code] = sorted(
+                        (
+                            {
+                                "name": _peek_label(group, catalog_names),
+                                "pieces": group["pieces"],
+                                "lots": group["lots"],
+                            }
+                            for group in part_groups.get(code, [])
+                        ),
+                        key=lambda row: (-row["pieces"], row["name"].lower()),
+                    )
+                    line.append(
+                        {
+                            "code": code,
+                            "category_id": bucket["id"],
+                            "part_label": bucket["name"],
+                            "color": bucket["color"],
+                            "ink": bucket["ink"],
+                            "max_items": bucket["max_items"],
+                            "pieces": counted["pieces"],
+                            "lots": counted["lots"],
+                        }
+                    )
+                grid.append(line)
+            # Rows 05–07 and 12–14 are the deep drawers on the left cabinet.
+            blocks.append({"rows": grid, "tall": side == "left"})
+        cabinets.append(blocks)
+    return {
+        "cabinets": cabinets,
+        "categories": categories,
+        "contents": contents,
+        "legend": [*legend.values(), unassigned],
+        "pieces": pieces,
+        "lots": lots,
+        "filled": filled,
+        "drawers": sum(part["drawers"] for part in legend.values()) + unassigned["drawers"],
+    }
+
+
+def _optional_max(value):
+    if value is None or value == "":
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Max each has to be a whole number.") from exc
+    return number
+
+
+@app.route("/inventory/drawers")
+def inventory_drawers():
+    return render_template("drawers.html", board=_drawer_board())
+
+
+@app.route("/inventory/drawers/categories", methods=["POST"])
+def inventory_drawer_category():
+    payload = request.get_json(silent=True) or {}
+    drawer = (payload.get("drawer") or "").strip().upper()
+    if drawer and not _on_drawer_map(drawer):
+        return jsonify(error="That drawer is not on this map."), 400
+    try:
+        category = db.create_drawer_category(
+            payload.get("name") or "",
+            payload.get("color") or "",
+            _optional_max(payload.get("max_items")),
+        )
+        if drawer:
+            db.assign_drawer_category(drawer, category["id"])
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(category=category, drawer=drawer)
+
+
+@app.route("/inventory/drawers/categories/<int:category_id>", methods=["POST"])
+def inventory_drawer_category_update(category_id):
+    payload = request.get_json(silent=True) or {}
+    try:
+        category = db.update_drawer_category(
+            category_id,
+            payload.get("name") or "",
+            payload.get("color") or "",
+            _optional_max(payload.get("max_items")),
+        )
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(category=category)
+
+
+@app.route("/inventory/drawers/assign", methods=["POST"])
+def inventory_drawer_assign():
+    payload = request.get_json(silent=True) or {}
+    drawer = (payload.get("drawer") or "").strip().upper()
+    if not _on_drawer_map(drawer):
+        return jsonify(error="That drawer is not on this map."), 400
+    raw = payload.get("category_id")
+    category_id = None
+    if raw not in (None, ""):
+        try:
+            category_id = int(raw)
+        except (TypeError, ValueError):
+            return jsonify(error="That category is not available."), 400
+    try:
+        db.assign_drawer_category(drawer, category_id)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(drawer=drawer, category_id=category_id)
 
 
 @app.route("/inventory/storage")
