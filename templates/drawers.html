@@ -6,7 +6,7 @@
     <div>
       <p class="eyebrow">Inventory</p>
       <h1>Drawers</h1>
-      <p class="lede">Piece counts from BrickLink remarks. <strong>AA-01-A</strong> and <strong>AA-01-2</strong> both belong to drawer AA-01. Rest on a drawer to see what's inside. Right-click to assign a part, or edit a part below.</p>
+      <p class="lede">Piece counts from BrickLink remarks. <strong>AA-01-A</strong> and <strong>AA-01-2</strong> both belong to drawer AA-01. A red dot means something inside doesn't match that drawer's color. Rest on a drawer to see what's inside. Right-click to assign a part, or open Parts to edit a category.</p>
     </div>
   </div>
 
@@ -28,35 +28,8 @@
     </article>
   </div>
 
-  <div class="drawer-scroll">
-    <div class="drawer-map">
-      {% for stack in board.cabinets %}
-      <div class="cabinet-stack">
-        {% for block in stack %}
-        <div class="cabinet-block{{ ' has-large' if block.tall else '' }}">
-          {% for row in block.rows %}
-            {% for cell in row %}
-            <a class="drawer{{ ' tone-tbd' if not cell.category_id else '' }}"
-               {% if cell.category_id %}style="background: {{ cell.color }}; color: {{ cell.ink }}"{% endif %}
-               href="{{ url_for('inventory', drawer=cell.code) }}"
-               data-code="{{ cell.code }}"
-               data-category="{{ cell.category_id or '' }}"
-               data-pieces="{{ cell.pieces }}"
-               data-lots="{{ cell.lots }}">
-              <span>{{ cell.code }}</span>
-              <strong class="{{ 'is-empty' if cell.pieces == 0 else '' }}">{{ '{:,}'.format(cell.pieces) }}</strong>
-            </a>
-            {% endfor %}
-          {% endfor %}
-        </div>
-        {% endfor %}
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-
-  <div class="panel drawer-legend">
-    <h2>Parts</h2>
+  <details class="panel drawer-legend">
+    <summary>Parts</summary>
     <table>
       <thead>
         <tr>
@@ -98,11 +71,78 @@
       </div>
       <p class="drawer-menu-error" hidden></p>
     </form>
+  </details>
+
+  {% macro drawer_cell(cell, wide=false) -%}
+  <a class="drawer{{ ' tone-minifig' if cell.fixed == 'tan' else '' }}{{ ' is-wide' if wide else '' }}{{ ' is-unavailable' if cell.unavailable else '' }}{{ ' is-empty' if cell.pieces == 0 and not cell.category_id and not cell.fixed else (' tone-tbd' if not cell.category_id and not cell.fixed else '') }}"
+     {% if cell.category_id %}style="background: {{ cell.color }}; color: {{ cell.ink }}"{% endif %}
+     href="{{ url_for('inventory', drawer=cell.code) }}"
+     data-code="{{ cell.code }}"
+     data-category="{{ cell.category_id or '' }}"
+     data-unavailable="{{ '1' if cell.unavailable else '' }}"
+     data-pieces="{{ cell.pieces }}"
+     data-lots="{{ cell.lots }}"
+     data-value="{{ money3(cell.value_milli) }}">
+    <span>{{ cell.code }}</span>
+    <strong class="{{ 'is-empty' if cell.pieces == 0 else '' }}">{{ '{:,}'.format(cell.pieces) }}</strong>
+    <span class="drawer-x" aria-hidden="true">X</span>
+  </a>
+  {%- endmacro %}
+
+  <div class="drawer-scroll">
+    <section class="drawer-group">
+      <h2>Akro Mills</h2>
+      <div class="drawer-map">
+      {% for stack in board.cabinets %}
+      <div class="cabinet-stack">
+        {% for block in stack %}
+        <div class="cabinet-block{{ ' has-large' if block.tall else '' }}">
+          {% for row in block.rows %}
+            {% for cell in row %}
+            {{ drawer_cell(cell) }}
+            {% endfor %}
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      </div>
+    </section>
+    <div class="drawer-row">
+      <section class="drawer-group">
+        <h2>Lidl Parkside</h2>
+        <div class="drawer-map">
+          {% for unit in board.parkside %}
+          <div class="cabinet-block parkside">
+            {% for row in unit.rows %}
+              {% for cell in row %}
+              {{ drawer_cell(cell) }}
+              {% endfor %}
+            {% endfor %}
+            {{ drawer_cell(unit.wide, wide=true) }}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      <section class="drawer-group">
+        <h2>Minifigure Drawers</h2>
+        <div class="drawer-map">
+          {% for tower in board.minifig %}
+          <div class="cabinet-block minifig">
+            {% for cell in tower %}
+            {{ drawer_cell(cell) }}
+            {% endfor %}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
   </div>
 
   <div class="drawer-menu" id="drawer-menu" hidden>
     <p class="drawer-menu-code"></p>
     <div class="drawer-menu-list"></div>
+    <button type="button" class="drawer-menu-block">Mark unavailable</button>
     <button type="button" class="drawer-menu-new">New category…</button>
     <form class="drawer-menu-form" hidden>
       <label>Name
@@ -119,15 +159,17 @@
     <p class="drawer-menu-error" hidden></p>
   </div>
   <div class="drawer-peek" id="drawer-peek" hidden>
-    <p class="drawer-peek-code"></p>
+    <p class="drawer-peek-code"><span class="drawer-peek-id"></span><span class="drawer-peek-value"></span></p>
     <p class="drawer-peek-assigned"></p>
     <p class="drawer-peek-count"></p>
+    <p class="drawer-peek-blocked" hidden>Unavailable. Remarks go in the other column.</p>
     <div class="drawer-peek-list"></div>
   </div>
   <script type="application/json" id="drawer-menu-data">{{ {
     "categories": board.categories,
     "contents": board.contents,
     "assignUrl": url_for("inventory_drawer_assign"),
+    "unavailableUrl": url_for("inventory_drawer_unavailable"),
     "createUrl": url_for("inventory_drawer_category"),
     "updateUrl": url_for("inventory_drawer_category_update", category_id=0)
   }|tojson }}</script>
@@ -137,6 +179,7 @@
     const menuCode = menu.querySelector(".drawer-menu-code");
     const menuList = menu.querySelector(".drawer-menu-list");
     const menuForm = menu.querySelector(".drawer-menu-form");
+    const menuBlock = menu.querySelector(".drawer-menu-block");
     const menuError = menu.querySelector(".drawer-menu-error");
     let categories = menuData.categories.slice();
     let currentDrawer = null;
@@ -176,20 +219,33 @@
       const previous = drawer.dataset.category || "";
       const pieces = Number(drawer.dataset.pieces);
       const lots = Number(drawer.dataset.lots);
-      if (previous !== String(category ? category.id : "")) {
-        shiftLegend(previous, pieces, -1);
-        shiftLegend(category ? category.id : "", pieces, 1);
+      const nextId = category ? String(category.id) : "";
+      const anchored = drawer.classList.contains("tone-minifig");
+      if (previous !== nextId) {
+        if (previous || !anchored) shiftLegend(previous, pieces, -1);
+        if (nextId || !anchored) shiftLegend(nextId, pieces, 1);
       }
-      drawer.dataset.category = category ? String(category.id) : "";
+      drawer.dataset.category = nextId;
       if (category) {
-        drawer.classList.remove("tone-tbd");
+        drawer.classList.remove("is-empty", "tone-tbd");
         drawer.style.background = category.color;
         drawer.style.color = category.ink;
+      } else if (anchored) {
+        drawer.classList.remove("is-empty", "tone-tbd");
+        drawer.style.background = "";
+        drawer.style.color = "";
+      } else if (pieces === 0) {
+        drawer.classList.add("is-empty");
+        drawer.classList.remove("tone-tbd");
+        drawer.style.background = "";
+        drawer.style.color = "";
       } else {
+        drawer.classList.remove("is-empty");
         drawer.classList.add("tone-tbd");
         drawer.style.background = "";
         drawer.style.color = "";
       }
+      markMismatch(drawer);
     }
 
     function addLegendRow(category) {
@@ -261,6 +317,36 @@
       }));
     }
 
+    const comparableNames = new Map();
+
+    function nameIsComparable(name) {
+      if (comparableNames.has(name)) return comparableNames.get(name);
+      const tokens = peekTokens(name);
+      const comparable = tokens.length > 0 && Object.values(menuData.contents).some((rows) => {
+        return rows.some((row) => peekFits(tokens, row.name));
+      });
+      comparableNames.set(name, comparable);
+      return comparable;
+    }
+
+    function offRows(drawer, rows) {
+      const name = assignedName(drawer);
+      const tokens = peekTokens(name);
+      if (!drawer.dataset.category || !nameIsComparable(name)) return [];
+      return rows.filter((row) => !peekFits(tokens, row.name));
+    }
+
+    function assignedName(drawer) {
+      const categoryId = drawer.dataset.category || "";
+      const category = categories.find((item) => String(item.id) === categoryId);
+      return category ? category.name : "Not assigned";
+    }
+
+    function markMismatch(drawer) {
+      const rows = menuData.contents[drawer.dataset.code] || [];
+      drawer.classList.toggle("has-mismatch", offRows(drawer, rows).length > 0);
+    }
+
     function placePeek(drawer) {
       const margin = 8;
       const rect = drawer.getBoundingClientRect();
@@ -278,15 +364,14 @@
     function showPeek(drawer) {
       if (!menu.hidden) return;
       const rows = (menuData.contents[drawer.dataset.code] || []).slice();
-      const categoryId = drawer.dataset.category || "";
-      const category = categories.find((item) => String(item.id) === categoryId);
-      const assigned = category ? category.name : "Not assigned";
-      const tokens = peekTokens(assigned);
-      const comparable = tokens.length > 0 && rows.some((row) => peekFits(tokens, row.name));
-      peek.querySelector(".drawer-peek-code").textContent = drawer.dataset.code;
+      const assigned = assignedName(drawer);
+      const off = new Set(offRows(drawer, rows));
+      peek.querySelector(".drawer-peek-id").textContent = drawer.dataset.code;
+      peek.querySelector(".drawer-peek-value").textContent = drawer.dataset.value || "$0.000";
       peek.querySelector(".drawer-peek-assigned").textContent = "Drawer: " + assigned;
       peek.querySelector(".drawer-peek-count").textContent =
         formatCount(drawer.dataset.pieces) + " pieces · " + formatCount(drawer.dataset.lots) + " lots";
+      peek.querySelector(".drawer-peek-blocked").hidden = !drawer.dataset.unavailable;
       const list = peek.querySelector(".drawer-peek-list");
       list.replaceChildren();
       if (!rows.length) {
@@ -295,18 +380,39 @@
         empty.textContent = "No parts in this drawer.";
         list.append(empty);
       } else {
+        const groups = [];
         rows.forEach((row) => {
-          const off = comparable && !peekFits(tokens, row.name);
-          const line = document.createElement("div");
-          line.className = "drawer-peek-row" + (off ? " is-off" : "");
-          const name = document.createElement("span");
-          name.textContent = row.name;
-          const count = document.createElement("strong");
-          count.textContent = formatCount(row.pieces);
-          line.append(name, count);
-          list.append(line);
+          const code = row.condition === "N" || row.condition === "U" ? row.condition : "";
+          let group = groups.find((item) => item.code === code);
+          if (!group) {
+            group = {code: code, rows: []};
+            groups.push(group);
+          }
+          group.rows.push(row);
         });
-        if (comparable && rows.some((row) => !peekFits(tokens, row.name))) {
+        const conditionRank = {N: 0, U: 1};
+        groups.sort((a, b) => (conditionRank[a.code] ?? 2) - (conditionRank[b.code] ?? 2));
+        groups.forEach((group) => {
+          const heading = document.createElement("p");
+          heading.className = "drawer-peek-condition";
+          const label = document.createElement("span");
+          label.textContent = group.code === "N" ? "New" : group.code === "U" ? "Used" : "Other";
+          const total = document.createElement("strong");
+          total.textContent = formatCount(group.rows.reduce((sum, row) => sum + Number(row.pieces), 0));
+          heading.append(label, total);
+          list.append(heading);
+          group.rows.forEach((row) => {
+            const line = document.createElement("div");
+            line.className = "drawer-peek-row" + (off.has(row) ? " is-off" : "");
+            const name = document.createElement("span");
+            name.textContent = row.name;
+            const count = document.createElement("strong");
+            count.textContent = formatCount(row.pieces);
+            line.append(name, count);
+            list.append(line);
+          });
+        });
+        if (off.size) {
           const note = document.createElement("p");
           note.className = "drawer-peek-note";
           note.textContent = "Marked rows don't match this drawer.";
@@ -317,7 +423,7 @@
       placePeek(drawer);
     }
 
-    document.querySelector(".drawer-map").addEventListener("mouseover", (event) => {
+    document.querySelector(".drawer-scroll").addEventListener("mouseover", (event) => {
       const drawer = event.target.closest(".drawer");
       if (!drawer || drawer === peekDrawer) return;
       clearTimeout(peekTimer);
@@ -326,7 +432,7 @@
       peekTimer = setTimeout(() => showPeek(drawer), 1000);
     });
 
-    document.querySelector(".drawer-map").addEventListener("mouseout", (event) => {
+    document.querySelector(".drawer-scroll").addEventListener("mouseout", (event) => {
       const drawer = event.target.closest(".drawer");
       if (!drawer || drawer !== peekDrawer) return;
       const next = event.relatedTarget;
@@ -355,6 +461,7 @@
       menuForm.hidden = true;
       menuError.hidden = true;
       renderMenu();
+      menuBlock.textContent = drawer.dataset.unavailable ? "Make available" : "Mark unavailable";
       menu.hidden = false;
       menuPoint = {x: x, y: y};
       fitMenu();
@@ -371,7 +478,7 @@
       return payload;
     }
 
-    document.querySelector(".drawer-map").addEventListener("contextmenu", (event) => {
+    document.querySelector(".drawer-scroll").addEventListener("contextmenu", (event) => {
       const drawer = event.target.closest(".drawer");
       if (!drawer) return;
       event.preventDefault();
@@ -396,6 +503,28 @@
         menuError.textContent = error.message;
         menuError.hidden = false;
         button.disabled = false;
+      }
+    });
+
+    menuBlock.addEventListener("click", async () => {
+      if (!currentDrawer) return;
+      const drawer = currentDrawer;
+      const unavailable = !drawer.dataset.unavailable;
+      menuBlock.disabled = true;
+      menuError.hidden = true;
+      try {
+        await postJson(menuData.unavailableUrl, {
+          drawer: drawer.dataset.code,
+          unavailable: unavailable,
+        });
+        drawer.dataset.unavailable = unavailable ? "1" : "";
+        drawer.classList.toggle("is-unavailable", unavailable);
+        closeMenu();
+      } catch (error) {
+        menuError.textContent = error.message;
+        menuError.hidden = false;
+      } finally {
+        menuBlock.disabled = false;
       }
     });
 
@@ -518,6 +647,8 @@
       closeMenu();
       hidePeek();
     }, true);
+
+    document.querySelectorAll(".drawer").forEach(markMismatch);
   </script>
 </section>
 {% endblock %}

@@ -1,5 +1,6 @@
 import calendar
 import json
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -675,12 +676,7 @@ def _inventory_filters() -> dict:
     if remark is not None:
         remark = remark.strip()
     drawer = (request.args.get("drawer") or "").strip().upper()
-    if (
-        len(drawer) != 5
-        or drawer[2] != "-"
-        or not drawer[:2].isalpha()
-        or not drawer[3:].isdigit()
-    ):
+    if not db._DRAWER_CODE.fullmatch(drawer):
         drawer = ""
     return {
         "q": (request.args.get("q") or "").strip(),
@@ -727,8 +723,10 @@ def inventory():
     )
 
 
-# Left cabinet is AA–AH, rows 01–07 then 08–14. Right cabinet is AI–AP,
-# rows 01–08 then 09–16. Part colors come from saved drawer assignments.
+# Akro Mills: left cabinet AA–AH, rows 01–07 then 08–14. Right cabinet AI–AP,
+# rows 01–08 then 09–16.
+# Lidl Parkside: two units, columns BA–BD. First is rows 01–08 plus a wide
+# BA-09. Second is rows 10–17 plus a wide BA-18.
 _DRAWER_COLUMNS = {
     "left": [f"A{letter}" for letter in "ABCDEFGH"],
     "right": [f"A{letter}" for letter in "IJKLMNOP"],
@@ -737,10 +735,19 @@ _DRAWER_BLOCKS = {
     "left": (range(1, 8), range(8, 15)),
     "right": (range(1, 9), range(9, 17)),
 }
+_PARKSIDE_COLUMNS = ["BA", "BB", "BC", "BD"]
+_PARKSIDE_UNITS = (
+    (range(1, 9), 9),
+    (range(10, 18), 18),
+)
+# Minifigure drawers: two towers, D17-01–D17-12 and D17-13–D17-24.
+_MINIFIG_TOWERS = (range(1, 13), range(13, 25))
 
 
 def _on_drawer_map(code: str) -> bool:
     text = (code or "").strip().upper()
+    if re.fullmatch(r"D17-\d{2}", text):
+        return 1 <= int(text[4:]) <= 24
     if len(text) != 5 or text[2] != "-" or not text[:2].isalpha() or not text[3:].isdigit():
         return False
     column, row = text[:2], int(text[3:])
@@ -748,6 +755,10 @@ def _on_drawer_map(code: str) -> bool:
         return 1 <= row <= 14
     if column in _DRAWER_COLUMNS["right"]:
         return 1 <= row <= 16
+    if column in _PARKSIDE_COLUMNS:
+        if (1 <= row <= 8) or (10 <= row <= 17):
+            return True
+        return column == "BA" and row in (9, 18)
     return False
 
 
@@ -776,6 +787,7 @@ def _peek_label(group: dict, names: dict) -> str:
 def _drawer_board() -> dict:
     counts = db.drawer_quantities()
     part_groups = db.drawer_part_groups()
+    unavailable = db.unavailable_drawers()
     catalog_names = _bl_category_names()
     categories = db.list_drawer_categories()
     assignments = db.drawer_category_assignments()
@@ -795,61 +807,91 @@ def _drawer_board() -> dict:
     }
     cabinets = []
     contents = {}
-    pieces = lots = filled = 0
+    pieces = lots = filled = drawers = 0
+
+    def take(code, track_legend=True, fixed=""):
+        nonlocal pieces, lots, filled, drawers
+        counted = counts.get(code, {"pieces": 0, "lots": 0, "value_milli": 0})
+        category = legend.get(assignments.get(code))
+        # Minifigure towers stay tan until someone assigns a part. They are
+        # not an entry in the Parts list while they have no category.
+        if track_legend or category:
+            bucket = category or unassigned
+            bucket["drawers"] += 1
+            bucket["pieces"] += counted["pieces"]
+            bucket["lots"] += counted["lots"]
+        else:
+            bucket = unassigned
+        pieces += counted["pieces"]
+        lots += counted["lots"]
+        drawers += 1
+        if counted["pieces"]:
+            filled += 1
+        contents[code] = sorted(
+            (
+                {
+                    "name": _peek_label(group, catalog_names),
+                    "condition": group["condition"],
+                    "pieces": group["pieces"],
+                    "lots": group["lots"],
+                }
+                for group in part_groups.get(code, [])
+            ),
+            key=lambda row: (
+                0 if row["condition"] == "N" else 1 if row["condition"] == "U" else 2,
+                -row["pieces"],
+                row["name"].lower(),
+            ),
+        )
+        return {
+            "code": code,
+            "category_id": bucket["id"],
+            "part_label": bucket["name"],
+            "color": bucket["color"],
+            "ink": bucket["ink"],
+            "max_items": bucket["max_items"],
+            "pieces": counted["pieces"],
+            "lots": counted["lots"],
+            "value_milli": counted["value_milli"],
+            "unavailable": code in unavailable,
+            "fixed": fixed,
+        }
+
     for side in ("left", "right"):
         blocks = []
         for rows in _DRAWER_BLOCKS[side]:
             grid = []
             for row in rows:
-                line = []
-                for column in _DRAWER_COLUMNS[side]:
-                    code = f"{column}-{row:02d}"
-                    counted = counts.get(code, {"pieces": 0, "lots": 0})
-                    category = legend.get(assignments.get(code))
-                    bucket = category or unassigned
-                    bucket["drawers"] += 1
-                    bucket["pieces"] += counted["pieces"]
-                    bucket["lots"] += counted["lots"]
-                    pieces += counted["pieces"]
-                    lots += counted["lots"]
-                    if counted["pieces"]:
-                        filled += 1
-                    contents[code] = sorted(
-                        (
-                            {
-                                "name": _peek_label(group, catalog_names),
-                                "pieces": group["pieces"],
-                                "lots": group["lots"],
-                            }
-                            for group in part_groups.get(code, [])
-                        ),
-                        key=lambda row: (-row["pieces"], row["name"].lower()),
-                    )
-                    line.append(
-                        {
-                            "code": code,
-                            "category_id": bucket["id"],
-                            "part_label": bucket["name"],
-                            "color": bucket["color"],
-                            "ink": bucket["ink"],
-                            "max_items": bucket["max_items"],
-                            "pieces": counted["pieces"],
-                            "lots": counted["lots"],
-                        }
-                    )
-                grid.append(line)
+                grid.append([take(f"{column}-{row:02d}") for column in _DRAWER_COLUMNS[side]])
             # Rows 05–07 and 12–14 are the deep drawers on the left cabinet.
             blocks.append({"rows": grid, "tall": side == "left"})
         cabinets.append(blocks)
+    parkside = []
+    for rows, wide_row in _PARKSIDE_UNITS:
+        parkside.append(
+            {
+                "rows": [
+                    [take(f"{column}-{row:02d}") for column in _PARKSIDE_COLUMNS]
+                    for row in rows
+                ],
+                "wide": take(f"BA-{wide_row:02d}"),
+            }
+        )
+    minifig = [
+        [take(f"D17-{row:02d}", track_legend=False, fixed="tan") for row in rows]
+        for rows in _MINIFIG_TOWERS
+    ]
     return {
         "cabinets": cabinets,
+        "parkside": parkside,
+        "minifig": minifig,
         "categories": categories,
         "contents": contents,
         "legend": [*legend.values(), unassigned],
         "pieces": pieces,
         "lots": lots,
         "filled": filled,
-        "drawers": sum(part["drawers"] for part in legend.values()) + unassigned["drawers"],
+        "drawers": drawers,
     }
 
 
@@ -920,6 +962,17 @@ def inventory_drawer_assign():
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     return jsonify(drawer=drawer, category_id=category_id)
+
+
+@app.route("/inventory/drawers/unavailable", methods=["POST"])
+def inventory_drawer_unavailable():
+    payload = request.get_json(silent=True) or {}
+    drawer = (payload.get("drawer") or "").strip().upper()
+    if not _on_drawer_map(drawer):
+        return jsonify(error="That drawer is not on this map."), 400
+    unavailable = bool(payload.get("unavailable"))
+    db.set_drawer_unavailable(drawer, unavailable)
+    return jsonify(drawer=drawer, unavailable=unavailable)
 
 
 @app.route("/inventory/storage")

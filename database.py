@@ -244,6 +244,10 @@ CREATE TABLE IF NOT EXISTS drawer_assignments (
     category_id INTEGER NOT NULL REFERENCES drawer_categories(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS drawer_unavailable (
+    drawer_code TEXT PRIMARY KEY
+);
+
 CREATE TABLE IF NOT EXISTS bl_categories (
     category_id TEXT PRIMARY KEY,
     name TEXT NOT NULL
@@ -2609,12 +2613,9 @@ def list_store_inventory(
         clauses.append("remarks = ?")
         params.append(remark)
     code = (drawer or "").strip().upper()
-    if code:
-        # AA-01, AA-01-A, and AA-01-2 are the same drawer. AA-10 is not.
-        clauses.append(
-            "UPPER(SUBSTR(remarks, 1, 5)) = ? "
-            "AND UPPER(remarks) GLOB '[A-Z][A-Z]-[0-9][0-9]*'"
-        )
+    if _DRAWER_CODE.fullmatch(code):
+        # AA-01-A and D17-01-02 stay in AA-01 and D17-01. AA-10 is a different drawer.
+        clauses.append(f"{_DRAWER_SQL} = ? AND {_DRAWER_MATCH}")
         params.append(code)
     if stock == "for_sale":
         clauses.append("is_retain = 0 AND is_stock_room = 0")
@@ -2669,29 +2670,51 @@ STORAGE_SORTS = {
 }
 
 
-_DRAWER_CODE = re.compile(r"^[A-Z]{2}-\d{2}$")
+_DRAWER_CODE = re.compile(r"^(?:[A-Z]{2}-\d{2}|D17-\d{2})$")
+# Akro and Parkside codes are five characters (AA-01). Minifigure drawers are
+# six (D17-01). A suffix after that code stays in the same drawer.
+_DRAWER_MATCH = """
+(
+    UPPER(remarks) GLOB '[A-Z][A-Z]-[0-9][0-9]*'
+    OR UPPER(remarks) GLOB 'D17-[0-9][0-9]*'
+)
+"""
+_DRAWER_SQL = """
+CASE
+    WHEN UPPER(remarks) GLOB 'D17-[0-9][0-9]*' THEN UPPER(SUBSTR(remarks, 1, 6))
+    ELSE UPPER(SUBSTR(remarks, 1, 5))
+END
+"""
 
 
 def drawer_quantities() -> dict[str, dict]:
     """Pieces and lots keyed by drawer code.
 
-    The drawer is the column/row at the start of a remark, such as AA-01.
-    Anything after that (AA-01-A, AA-01-2) stays in the same drawer.
+    The drawer is the column/row at the start of a remark, such as AA-01
+    or D17-01. Anything after that (AA-01-A, D17-01-02) stays in the same drawer.
     """
     with get_conn() as conn:
         rows = conn.execute(
-            """
-            SELECT UPPER(SUBSTR(remarks, 1, 5)) AS drawer,
+            f"""
+            SELECT {_DRAWER_SQL} AS drawer,
                    COUNT(*) AS lots,
-                   COALESCE(SUM(quantity), 0) AS pieces
+                   COALESCE(SUM(quantity), 0) AS pieces,
+                   COALESCE(SUM(
+                       quantity * unit_price_milli
+                       * (100 - MIN(MAX(sale_rate, 0), 100)) / 100
+                   ), 0) AS value_milli
             FROM store_inventory
             WHERE is_stock_room = 0
-              AND UPPER(remarks) GLOB '[A-Z][A-Z]-[0-9][0-9]*'
+              AND {_DRAWER_MATCH}
             GROUP BY drawer
             """
         ).fetchall()
     return {
-        row["drawer"]: {"lots": int(row["lots"]), "pieces": int(row["pieces"])}
+        row["drawer"]: {
+            "lots": int(row["lots"]),
+            "pieces": int(row["pieces"]),
+            "value_milli": int(row["value_milli"]),
+        }
         for row in rows
         if _DRAWER_CODE.fullmatch(row["drawer"] or "")
     }
@@ -2726,19 +2749,20 @@ def replace_bl_categories(rows: list) -> None:
 
 
 def drawer_part_groups() -> dict[str, list]:
-    """Lots in each drawer, grouped by BrickLink item type and catalog category."""
+    """Lots in each drawer, grouped by condition, item type, and catalog category."""
     with get_conn() as conn:
         rows = conn.execute(
-            """
-            SELECT UPPER(SUBSTR(remarks, 1, 5)) AS drawer,
+            f"""
+            SELECT {_DRAWER_SQL} AS drawer,
+                   UPPER(new_or_used) AS condition,
                    item_type,
                    category_id,
                    COUNT(*) AS lots,
                    COALESCE(SUM(quantity), 0) AS pieces
             FROM store_inventory
             WHERE is_stock_room = 0
-              AND UPPER(remarks) GLOB '[A-Z][A-Z]-[0-9][0-9]*'
-            GROUP BY drawer, item_type, category_id
+              AND {_DRAWER_MATCH}
+            GROUP BY drawer, condition, item_type, category_id
             """
         ).fetchall()
     grouped = {}
@@ -2748,6 +2772,7 @@ def drawer_part_groups() -> dict[str, list]:
             continue
         grouped.setdefault(code, []).append(
             {
+                "condition": row["condition"] or "",
                 "item_type": row["item_type"] or "",
                 "category_id": str(row["category_id"] or ""),
                 "lots": int(row["lots"]),
@@ -2909,6 +2934,24 @@ def update_drawer_category(category_id: int, name: str, color: str, max_items: O
         "max_items": max_items,
         "ink": drawer_ink(paint),
     }
+
+
+def unavailable_drawers() -> set:
+    """Drawer codes marked as an unused column of a double drawer."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT drawer_code FROM drawer_unavailable").fetchall()
+    return {row["drawer_code"] for row in rows}
+
+
+def set_drawer_unavailable(code: str, unavailable: bool) -> None:
+    with get_conn() as conn:
+        if unavailable:
+            conn.execute(
+                "INSERT INTO drawer_unavailable(drawer_code) VALUES (?) ON CONFLICT(drawer_code) DO NOTHING",
+                (code,),
+            )
+            return
+        conn.execute("DELETE FROM drawer_unavailable WHERE drawer_code = ?", (code,))
 
 
 def assign_drawer_category(code: str, category_id: Optional[int]) -> None:
