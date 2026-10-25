@@ -783,6 +783,7 @@ main:has(.drawer-page) { max-width: 1360px; }
   vertical-align: middle;
 }
 .drawer-legend td.num, .drawer-legend th.num { text-align: right; padding-right: 12px; }
+.drawer-legend .legend-keywords { color: var(--muted); font-size: 0.88rem; max-width: 220px; }
 .legend-edit {
   background: white;
   color: var(--blue-dark);
@@ -798,6 +799,7 @@ main:has(.drawer-page) { max-width: 1360px; }
 }
 .drawer-edit[hidden] { display: none; }
 .drawer-edit-title { margin: 0; font-weight: 700; }
+.drawer-edit-hint { margin: 0; color: var(--muted); font-size: 0.78rem; }
 .drawer-edit label {
   display: grid;
   gap: 4px;

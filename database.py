@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS drawer_categories (
     name TEXT NOT NULL,
     color TEXT NOT NULL,
     max_items INTEGER,
+    keywords TEXT NOT NULL DEFAULT '',
     sort_order INTEGER NOT NULL DEFAULT 0
 );
 
@@ -268,6 +269,11 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _seed_drawer_categories(conn)
+        category_cols = {row[1] for row in conn.execute("PRAGMA table_info(drawer_categories)")}
+        if "keywords" not in category_cols:
+            conn.execute(
+                "ALTER TABLE drawer_categories ADD COLUMN keywords TEXT NOT NULL DEFAULT ''"
+            )
         cols = {row[1] for row in conn.execute("PRAGMA table_info(lots)")}
         if "tax_cents" not in cols:
             conn.execute("ALTER TABLE lots ADD COLUMN tax_cents INTEGER NOT NULL DEFAULT 0")
@@ -2842,11 +2848,23 @@ def drawer_ink(color: str) -> str:
     return "#ffffff" if luminance < 0.4 else "#1a1a1a"
 
 
+def _match_label(name: str, keywords: str) -> str:
+    """What the red dot compares against. Keywords win. Otherwise New or Used."""
+    if keywords:
+        return keywords
+    words = set(re.findall(r"[a-z0-9]+", (name or "").lower()))
+    if "new" in words and "used" not in words:
+        return "New"
+    if "used" in words and "new" not in words:
+        return "Used"
+    return ""
+
+
 def list_drawer_categories() -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT id, name, color, max_items, sort_order
+            SELECT id, name, color, max_items, keywords, sort_order
             FROM drawer_categories
             ORDER BY sort_order, name COLLATE NOCASE, id
             """
@@ -2854,7 +2872,9 @@ def list_drawer_categories() -> list[dict]:
     categories = []
     for row in rows:
         item = dict(row)
+        item["keywords"] = item.get("keywords") or ""
         item["ink"] = drawer_ink(item["color"])
+        item["match_label"] = _match_label(item["name"], item["keywords"])
         categories.append(item)
     return categories
 
@@ -2866,7 +2886,28 @@ def drawer_category_assignments() -> dict[str, int]:
     return {row["drawer_code"]: int(row["category_id"]) for row in rows}
 
 
-def _drawer_category_fields(name: str, color: str, max_items: Optional[int]) -> tuple:
+def _keywords(value) -> str:
+    parts = []
+    seen = set()
+    for piece in str(value or "").replace(";", ",").split(","):
+        word = " ".join(piece.split())
+        if not word:
+            continue
+        if len(word) > 40:
+            raise ValueError("Keep each keyword to 40 characters.")
+        if len(re.sub(r"[^a-z0-9]", "", word.lower())) < 2:
+            raise ValueError("Keywords need at least 2 letters.")
+        key = word.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(word)
+    if len(parts) > 12:
+        raise ValueError("Keep it to 12 keywords.")
+    return ", ".join(parts)
+
+
+def _drawer_category_fields(name: str, color: str, max_items: Optional[int], keywords: str) -> tuple:
     label = " ".join((name or "").split())
     if not label:
         raise ValueError("Name the category.")
@@ -2877,11 +2918,23 @@ def _drawer_category_fields(name: str, color: str, max_items: Optional[int]) -> 
         raise ValueError("Pick a color.")
     if max_items is not None and int(max_items) < 1:
         raise ValueError("Max each has to be at least 1.")
-    return label, paint, max_items
+    return label, paint, max_items, _keywords(keywords)
 
 
-def create_drawer_category(name: str, color: str, max_items: Optional[int]) -> dict:
-    label, paint, max_items = _drawer_category_fields(name, color, max_items)
+def _category_payload(category_id: int, label: str, paint: str, max_items, keywords: str) -> dict:
+    return {
+        "id": category_id,
+        "name": label,
+        "color": paint,
+        "max_items": max_items,
+        "keywords": keywords,
+        "match_label": _match_label(label, keywords),
+        "ink": drawer_ink(paint),
+    }
+
+
+def create_drawer_category(name: str, color: str, max_items: Optional[int], keywords: str = "") -> dict:
+    label, paint, max_items, keywords = _drawer_category_fields(name, color, max_items, keywords)
     with get_conn() as conn:
         order = conn.execute(
             "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM drawer_categories"
@@ -2889,26 +2942,22 @@ def create_drawer_category(name: str, color: str, max_items: Optional[int]) -> d
         try:
             cursor = conn.execute(
                 """
-                INSERT INTO drawer_categories(name, color, max_items, sort_order)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO drawer_categories(name, color, max_items, keywords, sort_order)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (label, paint, max_items, order),
+                (label, paint, max_items, keywords, order),
             )
         except sqlite3.IntegrityError as exc:
             raise ValueError("That category already exists.") from exc
         category_id = int(cursor.lastrowid)
-    return {
-        "id": category_id,
-        "name": label,
-        "color": paint,
-        "max_items": max_items,
-        "ink": drawer_ink(paint),
-    }
+    return _category_payload(category_id, label, paint, max_items, keywords)
 
 
-def update_drawer_category(category_id: int, name: str, color: str, max_items: Optional[int]) -> dict:
-    """Change a part's name, color, and max. Drawer assignments stay as they are."""
-    label, paint, max_items = _drawer_category_fields(name, color, max_items)
+def update_drawer_category(
+    category_id: int, name: str, color: str, max_items: Optional[int], keywords: str = ""
+) -> dict:
+    """Change a part's name, color, max, and keywords. Drawer assignments stay as they are."""
+    label, paint, max_items, keywords = _drawer_category_fields(name, color, max_items, keywords)
     with get_conn() as conn:
         found = conn.execute(
             "SELECT id FROM drawer_categories WHERE id = ?",
@@ -2920,20 +2969,14 @@ def update_drawer_category(category_id: int, name: str, color: str, max_items: O
             conn.execute(
                 """
                 UPDATE drawer_categories
-                SET name = ?, color = ?, max_items = ?
+                SET name = ?, color = ?, max_items = ?, keywords = ?
                 WHERE id = ?
                 """,
-                (label, paint, max_items, int(category_id)),
+                (label, paint, max_items, keywords, int(category_id)),
             )
         except sqlite3.IntegrityError as exc:
             raise ValueError("That category already exists.") from exc
-    return {
-        "id": int(category_id),
-        "name": label,
-        "color": paint,
-        "max_items": max_items,
-        "ink": drawer_ink(paint),
-    }
+    return _category_payload(int(category_id), label, paint, max_items, keywords)
 
 
 def unavailable_drawers() -> set:

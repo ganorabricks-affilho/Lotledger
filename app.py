@@ -801,6 +801,8 @@ def _drawer_board() -> dict:
         "color": "",
         "ink": "#1a1a1a",
         "max_items": None,
+        "keywords": "",
+        "match_label": "",
         "drawers": 0,
         "pieces": 0,
         "lots": 0,
@@ -921,6 +923,7 @@ def inventory_drawer_category():
             payload.get("name") or "",
             payload.get("color") or "",
             _optional_max(payload.get("max_items")),
+            payload.get("keywords") or "",
         )
         if drawer:
             db.assign_drawer_category(drawer, category["id"])
@@ -938,6 +941,7 @@ def inventory_drawer_category_update(category_id):
             payload.get("name") or "",
             payload.get("color") or "",
             _optional_max(payload.get("max_items")),
+            payload.get("keywords") or "",
         )
     except ValueError as exc:
         return jsonify(error=str(exc)), 400

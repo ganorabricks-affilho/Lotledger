@@ -6,7 +6,7 @@
     <div>
       <p class="eyebrow">Inventory</p>
       <h1>Drawers</h1>
-      <p class="lede">Piece counts from BrickLink remarks. <strong>AA-01-A</strong> and <strong>AA-01-2</strong> both belong to drawer AA-01. A red dot means something inside doesn't match that drawer's color. Rest on a drawer to see what's inside. Right-click to assign a part, or open Parts to edit a category.</p>
+      <p class="lede">Piece counts from BrickLink remarks. <strong>AA-01-A</strong> and <strong>AA-01-2</strong> both belong to drawer AA-01. A red dot means a part doesn't match that category. Keywords decide the match. With the keywords field blank, a category named New or Used is matched by condition, and every other category marks all of its parts. Rest on a drawer to see what's inside. Right-click to assign a part, or open Parts to edit a category.</p>
     </div>
   </div>
 
@@ -35,6 +35,7 @@
         <tr>
           <th>Color</th>
           <th>Part</th>
+          <th>Keywords</th>
           <th class="num">Drawers</th>
           <th class="num">Pieces</th>
           <th class="num">Max each</th>
@@ -46,6 +47,7 @@
         <tr data-category="{{ part.id or '' }}">
           <td><span class="swatch" {% if part.color %}style="background: {{ part.color }}"{% endif %}></span></td>
           <td class="legend-name">{{ part.name }}</td>
+          <td class="legend-keywords">{{ part.match_label or '—' }}</td>
           <td class="num legend-drawers">{{ '{:,}'.format(part.drawers) }}</td>
           <td class="num legend-pieces">{{ '{:,}'.format(part.pieces) }}</td>
           <td class="num legend-max">{% if part.max_items %}{{ '{:,}'.format(part.max_items) }}{% else %}—{% endif %}</td>
@@ -65,6 +67,10 @@
       <label>Max each
         <input name="max_items" type="number" min="1" inputmode="numeric" placeholder="optional">
       </label>
+      <label>Keywords
+        <input name="keywords" maxlength="200" placeholder="head, torso">
+      </label>
+      <p class="drawer-edit-hint">Comma-separated. Leave blank to match New or Used from the category name.</p>
       <div class="drawer-edit-actions">
         <button type="submit">Save category</button>
         <button type="button" class="drawer-edit-cancel ghost">Cancel</button>
@@ -153,6 +159,9 @@
       </label>
       <label>Max each
         <input name="max_items" type="number" min="1" inputmode="numeric" placeholder="optional">
+      </label>
+      <label>Keywords
+        <input name="keywords" maxlength="200" placeholder="head, torso">
       </label>
       <button type="submit">Create and assign</button>
     </form>
@@ -255,12 +264,14 @@
       row.dataset.lots = "0";
       row.innerHTML = '<td><span class="swatch"></span></td>'
         + '<td class="legend-name"></td>'
+        + '<td class="legend-keywords"></td>'
         + '<td class="num legend-drawers">0</td>'
         + '<td class="num legend-pieces">0</td>'
         + '<td class="num legend-max"></td>'
         + '<td class="legend-actions"><button type="button" class="legend-edit">Edit</button></td>';
       row.querySelector(".swatch").style.background = category.color;
       row.querySelector(".legend-name").textContent = category.name;
+      row.querySelector(".legend-keywords").textContent = ruleLabel(category);
       row.querySelector(".legend-max").textContent = category.max_items ? formatCount(category.max_items) : "—";
       unassigned.parentNode.insertBefore(row, unassigned);
     }
@@ -291,9 +302,44 @@
     }
 
     const peek = document.getElementById("drawer-peek");
-    const peekStop = new Set(["minifigure", "minifigures", "minifig", "part", "parts", "new", "the", "and", "with"]);
     let peekDrawer = null;
     let peekTimer = null;
+
+    function categoryKeywords(category) {
+      return (category.keywords || "").split(",").map((word) => word.trim()).filter(Boolean);
+    }
+
+    function conditionRule(name) {
+      const words = (name || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+      const hasNew = words.includes("new");
+      const hasUsed = words.includes("used");
+      if (hasNew && !hasUsed) return "N";
+      if (hasUsed && !hasNew) return "U";
+      return "";
+    }
+
+    function ruleLabel(category) {
+      const keywords = categoryKeywords(category);
+      if (keywords.length) return keywords.join(", ");
+      const condition = conditionRule(category.name);
+      if (condition === "N") return "New";
+      if (condition === "U") return "Used";
+      return "—";
+    }
+
+    function wordMatches(word, key) {
+      return word === key || word === key + "s" || word + "s" === key;
+    }
+
+    function keywordFits(keyword, label) {
+      const keys = (keyword.toLowerCase().match(/[a-z0-9]+/g) || []).filter((word) => word.length >= 2);
+      const words = (label || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+      if (!keys.length || words.length < keys.length) return false;
+      for (let index = 0; index <= words.length - keys.length; index += 1) {
+        if (keys.every((key, offset) => wordMatches(words[index + offset], key))) return true;
+      }
+      return false;
+    }
 
     function hidePeek() {
       clearTimeout(peekTimer);
@@ -302,43 +348,35 @@
       peekDrawer = null;
     }
 
-    function peekTokens(name) {
-      return (name.toLowerCase().match(/[a-z0-9]+/g) || []).filter((word) => {
-        return word.length >= 4 && !peekStop.has(word);
-      });
-    }
-
-    function peekFits(tokens, label) {
-      const words = label.toLowerCase().match(/[a-z0-9]+/g) || [];
-      return tokens.some((token) => words.some((word) => {
-        const short = token.length < word.length ? token : word;
-        const long = token.length < word.length ? word : token;
-        return short.length >= 4 && long.startsWith(short);
-      }));
-    }
-
-    const comparableNames = new Map();
-
-    function nameIsComparable(name) {
-      if (comparableNames.has(name)) return comparableNames.get(name);
-      const tokens = peekTokens(name);
-      const comparable = tokens.length > 0 && Object.values(menuData.contents).some((rows) => {
-        return rows.some((row) => peekFits(tokens, row.name));
-      });
-      comparableNames.set(name, comparable);
-      return comparable;
+    function assignedCategory(drawer) {
+      const categoryId = drawer.dataset.category || "";
+      return categories.find((item) => String(item.id) === categoryId) || null;
     }
 
     function offRows(drawer, rows) {
-      const name = assignedName(drawer);
-      const tokens = peekTokens(name);
-      if (!drawer.dataset.category || !nameIsComparable(name)) return [];
-      return rows.filter((row) => !peekFits(tokens, row.name));
+      const category = assignedCategory(drawer);
+      if (!category) return [];
+      const keywords = categoryKeywords(category);
+      if (keywords.length) {
+        return rows.filter((row) => !keywords.some((keyword) => keywordFits(keyword, row.name)));
+      }
+      const condition = conditionRule(category.name);
+      if (condition) return rows.filter((row) => row.condition !== condition);
+      return rows.slice();
+    }
+
+    function mismatchNote(drawer) {
+      const category = assignedCategory(drawer);
+      if (!category) return "";
+      if (categoryKeywords(category).length) return "Marked rows don't match the keywords.";
+      const condition = conditionRule(category.name);
+      if (condition === "N") return "Marked rows are not new.";
+      if (condition === "U") return "Marked rows are not used.";
+      return "No keywords for this category, so every part is marked.";
     }
 
     function assignedName(drawer) {
-      const categoryId = drawer.dataset.category || "";
-      const category = categories.find((item) => String(item.id) === categoryId);
+      const category = assignedCategory(drawer);
       return category ? category.name : "Not assigned";
     }
 
@@ -415,7 +453,7 @@
         if (off.size) {
           const note = document.createElement("p");
           note.className = "drawer-peek-note";
-          note.textContent = "Marked rows don't match this drawer.";
+          note.textContent = mismatchNote(drawer);
           list.append(note);
         }
       }
@@ -549,6 +587,7 @@
           name: menuForm.elements.name.value,
           color: menuForm.elements.color.value,
           max_items: maxField,
+          keywords: menuForm.elements.keywords.value,
         });
         categories.push(payload.category);
         addLegendRow(payload.category);
@@ -576,6 +615,7 @@
       if (row) {
         row.querySelector(".swatch").style.background = category.color;
         row.querySelector(".legend-name").textContent = category.name;
+        row.querySelector(".legend-keywords").textContent = ruleLabel(category);
         row.querySelector(".legend-max").textContent = category.max_items ? formatCount(category.max_items) : "—";
       }
       document.querySelectorAll('.drawer[data-category="' + category.id + '"]').forEach((drawer) => {
@@ -596,6 +636,7 @@
       editForm.elements.name.value = category.name;
       editForm.elements.color.value = category.color;
       editForm.elements.max_items.value = category.max_items || "";
+      editForm.elements.keywords.value = category.keywords || "";
       editError.hidden = true;
       editForm.hidden = false;
       editForm.scrollIntoView({block: "nearest"});
@@ -623,6 +664,7 @@
           name: editForm.elements.name.value,
           color: editForm.elements.color.value,
           max_items: maxField,
+          keywords: editForm.elements.keywords.value,
         });
         applyCategory(payload.category);
         closeEdit();
