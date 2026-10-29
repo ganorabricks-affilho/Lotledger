@@ -2788,6 +2788,435 @@ def drawer_part_groups() -> dict[str, list]:
     return grouped
 
 
+_PLACE_TYPE = {
+    "P": "PART",
+    "M": "MINIFIG",
+    "S": "SET",
+    "G": "GEAR",
+    "B": "BOOK",
+    "C": "CATALOG",
+    "I": "INSTRUCTION",
+    "O": "ORIGINAL_BOX",
+    "U": "UNSORTED_LOT",
+}
+
+
+_MINIFIG_CODES = tuple(f"D17-{row:02d}" for row in range(1, 25))
+
+
+def drawer_code(remarks: str) -> str:
+    """Column/row at the start of a remark. AJ-09-01 and D17-01-02 roll up."""
+    text = (remarks or "").strip().upper()
+    if re.match(r"D17-\d{2}", text):
+        code = text[:6]
+    elif re.match(r"[A-Z]{2}-\d{2}", text):
+        code = text[:5]
+    else:
+        return ""
+    return code if _DRAWER_CODE.fullmatch(code) else ""
+
+
+def _place_type(value: str) -> str:
+    text = (value or "").strip().upper()
+    return _PLACE_TYPE.get(text, text)
+
+
+def _color_key(value) -> str:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return str(int(text))
+    return text.lower()
+
+
+def _keyword_fits(keyword: str, label: str) -> bool:
+    keys = [word for word in re.findall(r"[a-z0-9]+", (keyword or "").lower()) if len(word) >= 2]
+    words = re.findall(r"[a-z0-9]+", (label or "").lower())
+    if not keys or len(words) < len(keys):
+        return False
+    for index in range(len(words) - len(keys) + 1):
+        if all(_word_matches(words[index + offset], key) for offset, key in enumerate(keys)):
+            return True
+    return False
+
+
+def _word_matches(word: str, key: str) -> bool:
+    return word == key or word == key + "s" or word + "s" == key
+
+
+def _condition_rule(name: str) -> str:
+    words = re.findall(r"[a-z0-9]+", (name or "").lower())
+    has_new = "new" in words
+    has_used = "used" in words
+    if has_new and not has_used:
+        return "N"
+    if has_used and not has_new:
+        return "U"
+    return ""
+
+
+def _price_text(millis: int) -> str:
+    return f"{(millis or 0) / 1000:.3f}"
+
+
+def suggest_place_rows(items: list) -> list:
+    """Suggest a remark and a price for each pasted BrickStore row.
+
+    A part already in the store keeps the remark that holds the most of it,
+    and the pasted remark when that one is already among them. Its price
+    becomes the highest unit price for that item, color, and condition.
+    Anything else gets a drawer code for the matching part, preferring a
+    drawer of that part that still has room. A minifigure goes to the
+    minifigure drawers, D17-01 through D17-24.
+    """
+    wanted = []
+    for item in items:
+        wanted.append((item.get("item_id") or "").strip().lower())
+    catalog = bl_category_names()
+    categories = list_drawer_categories()
+    assignments = drawer_category_assignments()
+    unavailable = unavailable_drawers()
+    quantities = drawer_quantities()
+    type_pieces = {}
+    for code, groups in drawer_part_groups().items():
+        bucket = type_pieces.setdefault(code, {})
+        for group in groups:
+            category_id = str(group["category_id"] or "")
+            bucket[category_id] = bucket.get(category_id, 0) + int(group["pieces"])
+    drawers_of = {}
+    category_by_id = {category["id"]: category for category in categories}
+    for code, category_id in assignments.items():
+        if code in unavailable:
+            continue
+        drawers_of.setdefault(category_id, []).append(code)
+
+    lots, names, colors = _place_stock(wanted)
+    reserved = {}
+    rows = []
+    for item in items:
+        rows.append(
+            _suggest_one(
+                item,
+                lots=lots,
+                names=names,
+                colors=colors,
+                catalog=catalog,
+                categories=categories,
+                category_by_id=category_by_id,
+                assignments=assignments,
+                unavailable=unavailable,
+                drawers_of=drawers_of,
+                quantities=quantities,
+                type_pieces=type_pieces,
+                reserved=reserved,
+            )
+        )
+    return rows
+
+
+def _place_stock(item_nos: list) -> tuple:
+    lots = {}
+    names = {}
+    colors = {}
+    if not item_nos:
+        return lots, names, colors
+    unique = sorted({number for number in item_nos if number})
+    with get_conn() as conn:
+        for row in conn.execute(
+            """
+            SELECT color_id, MAX(color_name) AS color_name
+            FROM store_inventory
+            WHERE color_name != ''
+            GROUP BY color_id
+            """
+        ):
+            colors[_color_key(row["color_id"])] = row["color_name"]
+        placeholders = ",".join("?" for _ in unique)
+        stock = conn.execute(
+            f"""
+            SELECT item_no, item_type, color_id, new_or_used, remarks, quantity,
+                   unit_price_milli, item_name, image_url
+            FROM store_inventory
+            WHERE is_stock_room = 0
+              AND lower(item_no) IN ({placeholders})
+            """,
+            unique,
+        ).fetchall()
+    for row in stock:
+        item_key = (row["item_no"] or "").strip().lower()
+        color_key = _color_key(row["color_id"])
+        if row["item_name"] and (item_key, color_key) not in names:
+            names[(item_key, color_key)] = {
+                "item_name": row["item_name"],
+                "image_url": row["image_url"] or "",
+            }
+        if row["item_name"] and item_key not in names:
+            names[item_key] = {"item_name": row["item_name"], "image_url": ""}
+        condition = (row["new_or_used"] or "").upper()
+        key = (item_key, _place_type(row["item_type"]), color_key, condition)
+        lots.setdefault(key, []).append(
+            {
+                "remarks": row["remarks"] or "",
+                "quantity": int(row["quantity"] or 0),
+                "price_milli": int(row["unit_price_milli"] or 0),
+            }
+        )
+    return lots, names, colors
+
+
+def _suggest_one(item, lots, names, colors, catalog, categories, category_by_id, assignments, unavailable, drawers_of, quantities, type_pieces, reserved) -> dict:
+    item_id = (item.get("item_id") or "").strip()
+    item_key = item_id.lower()
+    color_key = _color_key(item.get("color_id"))
+    condition = (item.get("condition") or "").upper()
+    type_key = _place_type(item.get("item_type"))
+    orig_remarks = item.get("remarks") or ""
+    orig_price = item.get("price") or ""
+    orig_milli = int(round(_price_amount(orig_price) * 1000))
+    named = names.get((item_key, color_key)) or names.get(item_key) or {}
+    category_id = str(item.get("category_id") or "")
+    category_name = catalog.get(category_id) or ""
+    qty = int(item.get("qty") or 0)
+    row = {
+        "item_id": item_id,
+        "item_type": item.get("item_type") or "P",
+        "color_id": item.get("color_id") or "",
+        "category_id": category_id,
+        "qty": qty,
+        "orig_qty": qty,
+        "price": orig_price,
+        "orig_price": orig_price,
+        "condition": condition,
+        "condition_label": {"N": "New", "U": "Used"}.get(condition, condition or "—"),
+        "sale": item.get("sale") or "",
+        "orig_sale": item.get("sale") or "",
+        "comments": item.get("comments") or "",
+        "orig_comments": item.get("comments") or "",
+        "remarks": orig_remarks,
+        "orig_remarks": orig_remarks,
+        "extra": item.get("extra") or [],
+        "item_name": named.get("item_name") or "",
+        "image_url": named.get("image_url") or "",
+        "color_name": colors.get(color_key) or "",
+        "category_name": category_name,
+        "note": "",
+        "price_note": "",
+        "kind": "",
+        "remark_changed": False,
+        "price_changed": False,
+        "qty_changed": False,
+        "sale_changed": False,
+        "comments_changed": False,
+    }
+    stock = lots.get((item_key, type_key, color_key, condition)) or []
+    if type_key == "MINIFIG":
+        minifig_stock = [lot for lot in stock if drawer_code(lot["remarks"]) in _MINIFIG_CODES]
+        if minifig_stock:
+            _apply_duplicate(
+                row, minifig_stock, quantities, reserved, orig_remarks, orig_price, orig_milli,
+                assignments, category_by_id,
+            )
+        else:
+            _apply_minifig_drawer(row, quantities, reserved, unavailable, qty, orig_remarks)
+        _apply_inventory_price(row, stock, orig_price, orig_milli)
+        return row
+    if stock:
+        _apply_duplicate(
+            row, stock, quantities, reserved, orig_remarks, orig_price, orig_milli,
+            assignments, category_by_id,
+        )
+        return row
+    _apply_drawer(
+        row,
+        categories=categories,
+        category_by_id=category_by_id,
+        drawers_of=drawers_of,
+        quantities=quantities,
+        type_pieces=type_pieces,
+        reserved=reserved,
+        category_name=category_name,
+        category_id=category_id,
+        condition=condition,
+        qty=qty,
+        orig_remarks=orig_remarks,
+        allow_condition=type_key == "PART",
+    )
+    return row
+
+
+def _price_amount(value: str) -> float:
+    raw = str(value or "").replace("$", "").replace(",", "").strip()
+    if raw == "":
+        return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
+def _same_text(left: str, right: str) -> bool:
+    return (left or "").strip().lower() == (right or "").strip().lower()
+
+
+def _apply_inventory_price(row, stock, orig_price, orig_milli) -> None:
+    if not stock:
+        return
+    highest = max(lot["price_milli"] for lot in stock)
+    if highest != orig_milli:
+        row["price"] = _price_text(highest)
+        row["price_changed"] = True
+        row["price_note"] = f"Was {orig_price or '0.000'} · inventory high {row['price']}"
+
+
+def _apply_duplicate(row, stock, quantities, reserved, orig_remarks, orig_price, orig_milli, assignments, category_by_id) -> None:
+    _apply_inventory_price(row, stock, orig_price, orig_milli)
+    chosen = _fullest_remark(stock, orig_remarks)
+    row["remarks"] = chosen if not _same_text(chosen, orig_remarks) else orig_remarks
+    row["remark_changed"] = not _same_text(row["remarks"], orig_remarks)
+    code = drawer_code(row["remarks"])
+    if code:
+        reserved[code] = reserved.get(code, 0) + row["qty"]
+    where = row["remarks"] or "a lot with no remark"
+    row["kind"] = "duplicate"
+    row["note"] = f"Same part is already in {where}"
+    max_items, label = _drawer_limit(code, assignments, category_by_id)
+    _note_capacity(row, code, quantities, reserved, max_items, label)
+
+
+def _fullest_remark(stock, orig_remarks: str) -> str:
+    for lot in stock:
+        if _same_text(lot["remarks"], orig_remarks) and (lot["remarks"] or orig_remarks):
+            return orig_remarks
+    fullest = min(
+        stock,
+        key=lambda lot: (-lot["quantity"], -lot["price_milli"], (lot["remarks"] or "").lower()),
+    )
+    return fullest["remarks"]
+
+
+def _apply_minifig_drawer(row, quantities, reserved, unavailable, qty, orig_remarks) -> None:
+    """New minifigures go to the D17 towers, starting with the emptiest drawer."""
+    codes = [code for code in _MINIFIG_CODES if code not in unavailable]
+    pasted = drawer_code(orig_remarks)
+    if pasted in codes:
+        row["kind"] = "kept"
+        reserved[pasted] = reserved.get(pasted, 0) + qty
+        row["note"] = "Minifigure drawers"
+        return
+    if not codes:
+        row["kind"] = "none"
+        row["note"] = "No minifigure drawer is available"
+        return
+    code = min(codes, key=lambda item: (_used_pieces(item, quantities, reserved), item))
+    row["kind"] = "suggested"
+    row["remarks"] = code
+    row["remark_changed"] = not _same_text(row["remarks"], orig_remarks)
+    reserved[code] = reserved.get(code, 0) + qty
+    row["note"] = f"Minifigure drawers · {code}"
+
+
+def _apply_drawer(row, categories, category_by_id, drawers_of, quantities, type_pieces, reserved, category_name, category_id, condition, qty, orig_remarks, allow_condition=True) -> None:
+    matched = _matching_categories(categories, category_name, condition, allow_condition)
+    candidates = []
+    for category in matched:
+        for code in drawers_of.get(category["id"], []):
+            candidates.append((code, category))
+    if not candidates:
+        row["kind"] = "none"
+        row["note"] = "No drawer matched this item"
+        return
+    pasted = drawer_code(orig_remarks)
+    pasted_hit = next((item for item in candidates if item[0] == pasted), None)
+    if pasted_hit and _fits(pasted_hit[0], pasted_hit[1], qty, quantities, reserved):
+        row["kind"] = "kept"
+        reserved[pasted] = reserved.get(pasted, 0) + qty
+        return
+    code, category = _best_drawer(candidates, qty, quantities, type_pieces, reserved, category_id)
+    row["kind"] = "suggested"
+    if pasted and code == pasted and orig_remarks.strip():
+        row["remarks"] = orig_remarks
+    else:
+        row["remarks"] = code
+    row["remark_changed"] = not _same_text(row["remarks"], orig_remarks)
+    reserved[code] = reserved.get(code, 0) + qty
+    _note_capacity(row, code, quantities, reserved, category.get("max_items"), category["name"])
+
+
+def _matching_categories(categories, catalog_name: str, condition: str, allow_condition: bool = True) -> list:
+    keyword_hits = []
+    condition_hits = []
+    for category in categories:
+        keywords = [word.strip() for word in (category.get("keywords") or "").split(",") if word.strip()]
+        if keywords:
+            best = 0
+            for keyword in keywords:
+                if _keyword_fits(keyword, catalog_name):
+                    best = max(best, len(re.findall(r"[a-z0-9]+", keyword.lower())))
+            if best:
+                keyword_hits.append((best, category))
+            continue
+        if allow_condition and _condition_rule(category.get("name") or "") == condition and condition:
+            condition_hits.append(category)
+    if keyword_hits:
+        longest = max(hit[0] for hit in keyword_hits)
+        return [category for score, category in keyword_hits if score == longest]
+    return condition_hits
+
+
+def _used_pieces(code: str, quantities, reserved) -> int:
+    counted = quantities.get(code) or {}
+    return int(counted.get("pieces") or 0) + int(reserved.get(code) or 0)
+
+
+def _fits(code: str, category: dict, qty: int, quantities, reserved) -> bool:
+    max_items = category.get("max_items")
+    if max_items is None:
+        return True
+    return _used_pieces(code, quantities, reserved) + qty <= int(max_items)
+
+
+def _best_drawer(candidates, qty, quantities, type_pieces, reserved, category_id: str) -> tuple:
+    def rank(item):
+        code, category = item
+        fits = _fits(code, category, qty, quantities, reserved)
+        held = int((type_pieces.get(code) or {}).get(category_id) or 0)
+        max_items = category.get("max_items")
+        if max_items is None:
+            free = 10 ** 9
+        else:
+            free = int(max_items) - _used_pieces(code, quantities, reserved) - qty
+        return (not fits, -held, -free, code)
+
+    return min(candidates, key=rank)
+
+
+def _drawer_limit(code: str, assignments, category_by_id) -> tuple:
+    category = category_by_id.get(assignments.get(code)) if code else None
+    if not category:
+        return None, ""
+    return category.get("max_items"), category.get("name") or ""
+
+
+def _note_capacity(row, code: str, quantities, reserved, max_items, label: str) -> None:
+    """Say when a suggested drawer is over its max, and how much room a new remark leaves."""
+    if not code:
+        return
+    used = int((quantities.get(code) or {}).get("pieces") or 0) + int(reserved.get(code) or 0)
+    if row["remark_changed"] and label:
+        if max_items is None:
+            text = label
+        else:
+            free = int(max_items) - used
+            if free >= 0:
+                text = f"{label} · {free} free in {code} after this"
+            else:
+                text = f"{label} · {code} is {-free} over the max of {max_items}"
+    elif max_items is not None and used > int(max_items):
+        text = f"{code} is {used - int(max_items)} over the max of {max_items}"
+    else:
+        return
+    row["note"] = f"{row['note']} · {text}" if row["note"] else text
+
+
 _SEED_DRAWER_CATEGORIES = (
     ("Minifigures Heads", "#8fc47a", 144),
     ("Minifigure Torsos", "#c45c8c", 40),

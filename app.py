@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, flash, jsonify, redirect, render_template, request, session, url_for
 
 import bricklink
 import brickowl
@@ -42,6 +42,7 @@ def _nav_section() -> str:
         "inventory_sync_reject",
         "inventory_storage",
         "inventory_drawers",
+        "inventory_place",
     }:
         return "inventory"
     if endpoint in {"forge", "forge_parts"}:
@@ -905,6 +906,135 @@ def _optional_max(value):
     except (TypeError, ValueError) as exc:
         raise ValueError("Max each has to be a whole number.") from exc
     return number
+
+
+_PLACE_IMAGE = {
+    "P": "PART",
+    "M": "MINIFIG",
+    "S": "SET",
+    "G": "GEAR",
+    "B": "BOOK",
+    "C": "CATALOG",
+    "I": "INSTRUCTION",
+    "O": "ORIGINAL_BOX",
+}
+
+
+def _place_images(rows):
+    for row in rows:
+        kind = _PLACE_IMAGE.get((row.get("item_type") or "P").upper(), "PART")
+        if not row.get("image_url"):
+            row["image_url"] = bricklink.image_url(kind, row.get("item_id") or "", row.get("color_id") or "")
+        row["catalog_url"] = bricklink.catalog_url(kind, row.get("item_id") or "")
+
+
+def _place_summary(rows):
+    return {
+        "count": len(rows),
+        "remarks": sum(1 for row in rows if row.get("remark_changed")),
+        "prices": sum(1 for row in rows if row.get("price_changed")),
+        "stored": sum(1 for row in rows if row.get("kind") == "duplicate"),
+        "unplaced": sum(1 for row in rows if row.get("kind") == "none"),
+    }
+
+
+def _read_place_edits(rows, form):
+    edited = []
+    errors = []
+    for index, row in enumerate(rows):
+        prefix = f"item-{index}-"
+        qty_raw = (form.get(prefix + "qty") or "").strip()
+        price_raw = (form.get(prefix + "price") or "").strip().replace("$", "").replace(",", "")
+        sale_raw = (form.get(prefix + "sale") or "").strip()
+        comments = (form.get(prefix + "comments") or "").strip()
+        remarks = (form.get(prefix + "remarks") or "").strip()
+        item = dict(row)
+        try:
+            qty = int(qty_raw)
+            if qty < 1:
+                raise ValueError
+        except ValueError:
+            errors.append(f"Row {index + 1}: quantity has to be at least 1.")
+            qty = int(row["qty"])
+        try:
+            price = float(price_raw)
+            if price < 0:
+                raise ValueError
+        except ValueError:
+            errors.append(f"Row {index + 1}: price has to be a number.")
+            price_text = row["price"]
+        else:
+            price_text = f"{price:.3f}"
+        if sale_raw == "":
+            sale_text = ""
+        else:
+            try:
+                sale = int(sale_raw)
+                if sale < 0 or sale > 100:
+                    raise ValueError
+            except ValueError:
+                errors.append(f"Row {index + 1}: sale has to be a whole number from 0 to 100.")
+                sale_text = row["sale"]
+            else:
+                sale_text = "" if sale == 0 else str(sale)
+        item["qty"] = qty
+        item["price"] = price_text
+        item["sale"] = sale_text
+        item["comments"] = comments
+        item["remarks"] = remarks
+        item["qty_changed"] = qty != int(row["orig_qty"])
+        item["price_changed"] = bricklink.money_milli(price_text) != bricklink.money_milli(row["orig_price"])
+        item["sale_changed"] = sale_text != str(row["orig_sale"] or "").strip()
+        item["comments_changed"] = comments != (row["orig_comments"] or "")
+        item["remark_changed"] = remarks.lower() != (row["orig_remarks"] or "").strip().lower()
+        edited.append(item)
+    return edited, errors
+
+
+def _place_page(items, error, xml, skipped):
+    summary = _place_summary(items) if items else None
+    return render_template(
+        "inventory_place.html",
+        items=items,
+        error=error,
+        xml=xml,
+        skipped=skipped,
+        summary=summary,
+    )
+
+
+@app.route("/inventory/place", methods=["GET", "POST"])
+def inventory_place():
+    if request.method == "GET":
+        return _place_page(None, "", "", 0)
+    action = (request.form.get("action") or "calculate").strip()
+    source = request.form.get("source_xml")
+    if source is None:
+        source = request.form.get("xml") or ""
+    try:
+        parsed, skipped = brickstore.parse_place_xml(source)
+    except ValueError as exc:
+        if action == "copy":
+            return Response(str(exc), status=400, mimetype="text/plain")
+        return _place_page(None, str(exc), source, 0)
+    rows = db.suggest_place_rows(parsed)
+    _place_images(rows)
+    if action in {"download", "copy"}:
+        edited, errors = _read_place_edits(rows, request.form)
+        if errors:
+            message = " ".join(errors)
+            if action == "copy":
+                return Response(message, status=400, mimetype="text/plain")
+            return _place_page(edited, message, source, skipped)
+        xml = brickstore.render_place_xml(edited)
+        if action == "copy":
+            return Response(xml, mimetype="text/plain; charset=utf-8")
+        return Response(
+            xml,
+            mimetype="application/xml",
+            headers={"Content-Disposition": "attachment; filename=place-parts.xml"},
+        )
+    return _place_page(rows, "", source, skipped)
 
 
 @app.route("/inventory/drawers")

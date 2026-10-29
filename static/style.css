@@ -190,6 +190,7 @@ button.linkish { background: none; color: var(--muted); padding: 0; border-radiu
   margin-bottom: 28px;
 }
 .stats.compact { grid-template-columns: repeat(3, 1fr); }
+.stats.lot-stats { grid-template-columns: repeat(4, 1fr); }
 .stats.forge-stats { grid-template-columns: repeat(4, 1fr); }
 .stats.profit-stats { grid-template-columns: repeat(5, 1fr); }
 .stats article {
@@ -970,6 +971,47 @@ main:has(.drawer-page) { max-width: 1360px; }
 .drawer-peek-row strong { font-variant-numeric: tabular-nums; }
 .drawer-peek-row.is-off { color: var(--down); font-weight: 700; }
 .drawer-peek-note { margin-top: 8px; }
+
+.place-page textarea[hidden] { display: none; }
+.place-paste textarea {
+  min-height: 280px;
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.place-paste button { margin-top: 12px; }
+.place-error {
+  margin: 0 0 16px;
+  color: var(--down);
+  font-weight: 700;
+}
+.place-table input {
+  width: 100%;
+  min-width: 72px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+.place-table input[name$="-comments"] { min-width: 140px; }
+.place-table input[name$="-remarks"] { min-width: 110px; }
+.place-table input.is-changed {
+  background: #fff4cc;
+  border-color: #c48a1a;
+  box-shadow: inset 3px 0 0 #c48a1a;
+}
+.place-table .place-name { max-width: 280px; }
+.place-note {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  max-width: 220px;
+}
+.place-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+}
+.place-copy-status { color: var(--muted); font-size: 0.88rem; }
 
 @media (max-width: 800px) {
   .main-nav { flex-direction: column; align-items: stretch; padding: 12px 16px; }
