@@ -1,0 +1,696 @@
+{% extends "base.html" %}
+{% block title %}Drawers · Inventory · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page drawer-page">
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Inventory</p>
+      <h1>Drawers</h1>
+      <p class="lede">Piece counts from BrickLink remarks. <strong>AA-01-A</strong> and <strong>AA-01-2</strong> both belong to drawer AA-01. A red dot means a part doesn't match that category. Keywords decide the match. With the keywords field blank, a category named New or Used is matched by condition, and every other category marks all of its parts. Rest on a drawer to see what's inside. Right-click to assign a part, or open Parts to edit a category.</p>
+    </div>
+  </div>
+
+  <div class="stats compact">
+    <article>
+      <span>Drawers</span>
+      <strong>{{ '{:,}'.format(board.drawers) }}</strong>
+      <em>{{ '{:,}'.format(board.filled) }} with parts</em>
+    </article>
+    <article>
+      <span>Pieces</span>
+      <strong>{{ '{:,}'.format(board.pieces) }}</strong>
+      <em>on this map</em>
+    </article>
+    <article>
+      <span>Lots</span>
+      <strong>{{ '{:,}'.format(board.lots) }}</strong>
+      <em>BrickLink listings in those drawers</em>
+    </article>
+  </div>
+
+  <details class="panel drawer-legend">
+    <summary>Parts</summary>
+    <table>
+      <thead>
+        <tr>
+          <th>Color</th>
+          <th>Part</th>
+          <th>Keywords</th>
+          <th class="num">Drawers</th>
+          <th class="num">Pieces</th>
+          <th class="num">Max each</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for part in board.legend %}
+        <tr data-category="{{ part.id or '' }}">
+          <td><span class="swatch" {% if part.color %}style="background: {{ part.color }}"{% endif %}></span></td>
+          <td class="legend-name">{{ part.name }}</td>
+          <td class="legend-keywords">{{ part.match_label or '—' }}</td>
+          <td class="num legend-drawers">{{ '{:,}'.format(part.drawers) }}</td>
+          <td class="num legend-pieces">{{ '{:,}'.format(part.pieces) }}</td>
+          <td class="num legend-max">{% if part.max_items %}{{ '{:,}'.format(part.max_items) }}{% else %}—{% endif %}</td>
+          <td class="legend-actions">{% if part.id %}<button type="button" class="legend-edit">Edit</button>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <form class="drawer-edit" id="drawer-edit" hidden>
+      <p class="drawer-edit-title"></p>
+      <label>Name
+        <input name="name" maxlength="40" required>
+      </label>
+      <label>Color
+        <input name="color" type="color">
+      </label>
+      <label>Max each
+        <input name="max_items" type="number" min="1" inputmode="numeric" placeholder="optional">
+      </label>
+      <label>Keywords
+        <input name="keywords" maxlength="200" placeholder="head, torso">
+      </label>
+      <p class="drawer-edit-hint">Comma-separated. Leave blank to match New or Used from the category name.</p>
+      <div class="drawer-edit-actions">
+        <button type="submit">Save category</button>
+        <button type="button" class="drawer-edit-cancel ghost">Cancel</button>
+      </div>
+      <p class="drawer-menu-error" hidden></p>
+    </form>
+  </details>
+
+  {% macro drawer_cell(cell, wide=false) -%}
+  <a class="drawer{{ ' tone-minifig' if cell.fixed == 'tan' else '' }}{{ ' is-wide' if wide else '' }}{{ ' is-unavailable' if cell.unavailable else '' }}{{ ' is-empty' if cell.pieces == 0 and not cell.category_id and not cell.fixed else (' tone-tbd' if not cell.category_id and not cell.fixed else '') }}"
+     {% if cell.category_id %}style="background: {{ cell.color }}; color: {{ cell.ink }}"{% endif %}
+     href="{{ url_for('inventory', drawer=cell.code) }}"
+     data-code="{{ cell.code }}"
+     data-category="{{ cell.category_id or '' }}"
+     data-unavailable="{{ '1' if cell.unavailable else '' }}"
+     data-pieces="{{ cell.pieces }}"
+     data-lots="{{ cell.lots }}"
+     data-value="{{ money3(cell.value_milli) }}">
+    <span>{{ cell.code }}</span>
+    <strong class="{{ 'is-empty' if cell.pieces == 0 else '' }}">{{ '{:,}'.format(cell.pieces) }}</strong>
+    <span class="drawer-x" aria-hidden="true">X</span>
+  </a>
+  {%- endmacro %}
+
+  <div class="drawer-scroll">
+    <section class="drawer-group">
+      <h2>Akro Mills</h2>
+      <div class="drawer-map">
+      {% for stack in board.cabinets %}
+      <div class="cabinet-stack">
+        {% for block in stack %}
+        <div class="cabinet-block{{ ' has-large' if block.tall else '' }}">
+          {% for row in block.rows %}
+            {% for cell in row %}
+            {{ drawer_cell(cell) }}
+            {% endfor %}
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      </div>
+    </section>
+    <div class="drawer-row">
+      <section class="drawer-group">
+        <h2>Lidl Parkside</h2>
+        <div class="drawer-map">
+          {% for unit in board.parkside %}
+          <div class="cabinet-block parkside">
+            {% for row in unit.rows %}
+              {% for cell in row %}
+              {{ drawer_cell(cell) }}
+              {% endfor %}
+            {% endfor %}
+            {{ drawer_cell(unit.wide, wide=true) }}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      <section class="drawer-group">
+        <h2>Minifigure Drawers</h2>
+        <div class="drawer-map">
+          {% for tower in board.minifig %}
+          <div class="cabinet-block minifig">
+            {% for cell in tower %}
+            {{ drawer_cell(cell) }}
+            {% endfor %}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="drawer-menu" id="drawer-menu" hidden>
+    <p class="drawer-menu-code"></p>
+    <div class="drawer-menu-list"></div>
+    <button type="button" class="drawer-menu-block">Mark unavailable</button>
+    <button type="button" class="drawer-menu-new">New category…</button>
+    <form class="drawer-menu-form" hidden>
+      <label>Name
+        <input name="name" maxlength="40" required placeholder="Minifigure arms">
+      </label>
+      <label>Color
+        <input name="color" type="color" value="#5c6bc0">
+      </label>
+      <label>Max each
+        <input name="max_items" type="number" min="1" inputmode="numeric" placeholder="optional">
+      </label>
+      <label>Keywords
+        <input name="keywords" maxlength="200" placeholder="head, torso">
+      </label>
+      <button type="submit">Create and assign</button>
+    </form>
+    <p class="drawer-menu-error" hidden></p>
+  </div>
+  <div class="drawer-peek" id="drawer-peek" hidden>
+    <p class="drawer-peek-code"><span class="drawer-peek-id"></span><span class="drawer-peek-value"></span></p>
+    <p class="drawer-peek-assigned"></p>
+    <p class="drawer-peek-count"></p>
+    <p class="drawer-peek-blocked" hidden>Unavailable. Remarks go in the other column.</p>
+    <div class="drawer-peek-list"></div>
+  </div>
+  <script type="application/json" id="drawer-menu-data">{{ {
+    "categories": board.categories,
+    "contents": board.contents,
+    "assignUrl": url_for("inventory_drawer_assign"),
+    "unavailableUrl": url_for("inventory_drawer_unavailable"),
+    "createUrl": url_for("inventory_drawer_category"),
+    "updateUrl": url_for("inventory_drawer_category_update", category_id=0)
+  }|tojson }}</script>
+  <script>
+    const menuData = JSON.parse(document.getElementById("drawer-menu-data").textContent);
+    const menu = document.getElementById("drawer-menu");
+    const menuCode = menu.querySelector(".drawer-menu-code");
+    const menuList = menu.querySelector(".drawer-menu-list");
+    const menuForm = menu.querySelector(".drawer-menu-form");
+    const menuBlock = menu.querySelector(".drawer-menu-block");
+    const menuError = menu.querySelector(".drawer-menu-error");
+    let categories = menuData.categories.slice();
+    let currentDrawer = null;
+    let menuPoint = {x: 8, y: 8};
+
+    function fitMenu() {
+      const margin = 8;
+      menuList.style.maxHeight = "";
+      const limit = window.innerHeight - margin * 2;
+      if (menu.offsetHeight > limit) {
+        const shrink = menu.offsetHeight - limit;
+        menuList.style.maxHeight = Math.max(120, menuList.clientHeight - shrink) + "px";
+        menuList.scrollTop = menuList.scrollHeight;
+      }
+      menu.style.left = Math.max(margin, Math.min(menuPoint.x, window.innerWidth - menu.offsetWidth - margin)) + "px";
+      menu.style.top = Math.max(margin, Math.min(menuPoint.y, window.innerHeight - menu.offsetHeight - margin)) + "px";
+    }
+
+    function formatCount(value) {
+      return Number(value).toLocaleString("en-US");
+    }
+
+    function legendRow(categoryId) {
+      return document.querySelector('.drawer-legend tr[data-category="' + categoryId + '"]');
+    }
+
+    function shiftLegend(categoryId, pieces, direction) {
+      const row = legendRow(categoryId);
+      if (!row) return;
+      const drawersCell = row.querySelector(".legend-drawers");
+      const piecesCell = row.querySelector(".legend-pieces");
+      drawersCell.textContent = formatCount(Number(drawersCell.textContent.replace(/,/g, "")) + direction);
+      piecesCell.textContent = formatCount(Number(piecesCell.textContent.replace(/,/g, "")) + direction * pieces);
+    }
+
+    function paintDrawer(drawer, category) {
+      const previous = drawer.dataset.category || "";
+      const pieces = Number(drawer.dataset.pieces);
+      const lots = Number(drawer.dataset.lots);
+      const nextId = category ? String(category.id) : "";
+      const anchored = drawer.classList.contains("tone-minifig");
+      if (previous !== nextId) {
+        if (previous || !anchored) shiftLegend(previous, pieces, -1);
+        if (nextId || !anchored) shiftLegend(nextId, pieces, 1);
+      }
+      drawer.dataset.category = nextId;
+      if (category) {
+        drawer.classList.remove("is-empty", "tone-tbd");
+        drawer.style.background = category.color;
+        drawer.style.color = category.ink;
+      } else if (anchored) {
+        drawer.classList.remove("is-empty", "tone-tbd");
+        drawer.style.background = "";
+        drawer.style.color = "";
+      } else if (pieces === 0) {
+        drawer.classList.add("is-empty");
+        drawer.classList.remove("tone-tbd");
+        drawer.style.background = "";
+        drawer.style.color = "";
+      } else {
+        drawer.classList.remove("is-empty");
+        drawer.classList.add("tone-tbd");
+        drawer.style.background = "";
+        drawer.style.color = "";
+      }
+      markMismatch(drawer);
+    }
+
+    function addLegendRow(category) {
+      const unassigned = legendRow("");
+      const row = document.createElement("tr");
+      row.dataset.category = String(category.id);
+      row.dataset.lots = "0";
+      row.innerHTML = '<td><span class="swatch"></span></td>'
+        + '<td class="legend-name"></td>'
+        + '<td class="legend-keywords"></td>'
+        + '<td class="num legend-drawers">0</td>'
+        + '<td class="num legend-pieces">0</td>'
+        + '<td class="num legend-max"></td>'
+        + '<td class="legend-actions"><button type="button" class="legend-edit">Edit</button></td>';
+      row.querySelector(".swatch").style.background = category.color;
+      row.querySelector(".legend-name").textContent = category.name;
+      row.querySelector(".legend-keywords").textContent = ruleLabel(category);
+      row.querySelector(".legend-max").textContent = category.max_items ? formatCount(category.max_items) : "—";
+      unassigned.parentNode.insertBefore(row, unassigned);
+    }
+
+    function renderMenu() {
+      menuList.replaceChildren();
+      const none = document.createElement("button");
+      none.type = "button";
+      none.className = "drawer-menu-choice";
+      none.dataset.category = "";
+      none.textContent = "Not assigned";
+      menuList.append(none);
+      categories.forEach((category) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "drawer-menu-choice";
+        button.dataset.category = String(category.id);
+        const swatch = document.createElement("span");
+        swatch.className = "swatch";
+        swatch.style.background = category.color;
+        button.append(swatch, document.createTextNode(category.name));
+        menuList.append(button);
+      });
+      const selected = currentDrawer ? currentDrawer.dataset.category || "" : "";
+      menuList.querySelectorAll(".drawer-menu-choice").forEach((button) => {
+        button.classList.toggle("is-current", button.dataset.category === selected);
+      });
+    }
+
+    const peek = document.getElementById("drawer-peek");
+    let peekDrawer = null;
+    let peekTimer = null;
+
+    function categoryKeywords(category) {
+      return (category.keywords || "").split(",").map((word) => word.trim()).filter(Boolean);
+    }
+
+    function conditionRule(name) {
+      const words = (name || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+      const hasNew = words.includes("new");
+      const hasUsed = words.includes("used");
+      if (hasNew && !hasUsed) return "N";
+      if (hasUsed && !hasNew) return "U";
+      return "";
+    }
+
+    function ruleLabel(category) {
+      const keywords = categoryKeywords(category);
+      if (keywords.length) return keywords.join(", ");
+      const condition = conditionRule(category.name);
+      if (condition === "N") return "New";
+      if (condition === "U") return "Used";
+      return "—";
+    }
+
+    function wordMatches(word, key) {
+      return word === key || word === key + "s" || word + "s" === key;
+    }
+
+    function keywordFits(keyword, label) {
+      const keys = (keyword.toLowerCase().match(/[a-z0-9]+/g) || []).filter((word) => word.length >= 2);
+      const words = (label || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+      if (!keys.length || words.length < keys.length) return false;
+      for (let index = 0; index <= words.length - keys.length; index += 1) {
+        if (keys.every((key, offset) => wordMatches(words[index + offset], key))) return true;
+      }
+      return false;
+    }
+
+    function hidePeek() {
+      clearTimeout(peekTimer);
+      peekTimer = null;
+      peek.hidden = true;
+      peekDrawer = null;
+    }
+
+    function assignedCategory(drawer) {
+      const categoryId = drawer.dataset.category || "";
+      return categories.find((item) => String(item.id) === categoryId) || null;
+    }
+
+    function offRows(drawer, rows) {
+      const category = assignedCategory(drawer);
+      if (!category) return [];
+      const keywords = categoryKeywords(category);
+      if (keywords.length) {
+        return rows.filter((row) => !keywords.some((keyword) => keywordFits(keyword, row.name)));
+      }
+      const condition = conditionRule(category.name);
+      if (condition) return rows.filter((row) => row.condition !== condition);
+      return rows.slice();
+    }
+
+    function mismatchNote(drawer) {
+      const category = assignedCategory(drawer);
+      if (!category) return "";
+      if (categoryKeywords(category).length) return "Marked rows don't match the keywords.";
+      const condition = conditionRule(category.name);
+      if (condition === "N") return "Marked rows are not new.";
+      if (condition === "U") return "Marked rows are not used.";
+      return "No keywords for this category, so every part is marked.";
+    }
+
+    function assignedName(drawer) {
+      const category = assignedCategory(drawer);
+      return category ? category.name : "Not assigned";
+    }
+
+    function markMismatch(drawer) {
+      const rows = menuData.contents[drawer.dataset.code] || [];
+      drawer.classList.toggle("has-mismatch", offRows(drawer, rows).length > 0);
+    }
+
+    function placePeek(drawer) {
+      const margin = 8;
+      const rect = drawer.getBoundingClientRect();
+      const width = peek.offsetWidth;
+      const height = peek.offsetHeight;
+      let left = rect.right + margin;
+      if (left + width > window.innerWidth - margin) left = rect.left - width - margin;
+      left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+      let top = rect.top;
+      if (top + height > window.innerHeight - margin) top = window.innerHeight - height - margin;
+      peek.style.left = left + "px";
+      peek.style.top = Math.max(margin, top) + "px";
+    }
+
+    function showPeek(drawer) {
+      if (!menu.hidden) return;
+      const rows = (menuData.contents[drawer.dataset.code] || []).slice();
+      const assigned = assignedName(drawer);
+      const off = new Set(offRows(drawer, rows));
+      peek.querySelector(".drawer-peek-id").textContent = drawer.dataset.code;
+      peek.querySelector(".drawer-peek-value").textContent = drawer.dataset.value || "$0.000";
+      peek.querySelector(".drawer-peek-assigned").textContent = "Drawer: " + assigned;
+      peek.querySelector(".drawer-peek-count").textContent =
+        formatCount(drawer.dataset.pieces) + " pieces · " + formatCount(drawer.dataset.lots) + " lots";
+      peek.querySelector(".drawer-peek-blocked").hidden = !drawer.dataset.unavailable;
+      const list = peek.querySelector(".drawer-peek-list");
+      list.replaceChildren();
+      if (!rows.length) {
+        const empty = document.createElement("p");
+        empty.className = "drawer-peek-empty";
+        empty.textContent = "No parts in this drawer.";
+        list.append(empty);
+      } else {
+        const groups = [];
+        rows.forEach((row) => {
+          const code = row.condition === "N" || row.condition === "U" ? row.condition : "";
+          let group = groups.find((item) => item.code === code);
+          if (!group) {
+            group = {code: code, rows: []};
+            groups.push(group);
+          }
+          group.rows.push(row);
+        });
+        const conditionRank = {N: 0, U: 1};
+        groups.sort((a, b) => (conditionRank[a.code] ?? 2) - (conditionRank[b.code] ?? 2));
+        groups.forEach((group) => {
+          const heading = document.createElement("p");
+          heading.className = "drawer-peek-condition";
+          const label = document.createElement("span");
+          label.textContent = group.code === "N" ? "New" : group.code === "U" ? "Used" : "Other";
+          const total = document.createElement("strong");
+          total.textContent = formatCount(group.rows.reduce((sum, row) => sum + Number(row.pieces), 0));
+          heading.append(label, total);
+          list.append(heading);
+          group.rows.forEach((row) => {
+            const line = document.createElement("div");
+            line.className = "drawer-peek-row" + (off.has(row) ? " is-off" : "");
+            const name = document.createElement("span");
+            name.textContent = row.name;
+            const count = document.createElement("strong");
+            count.textContent = formatCount(row.pieces);
+            line.append(name, count);
+            list.append(line);
+          });
+        });
+        if (off.size) {
+          const note = document.createElement("p");
+          note.className = "drawer-peek-note";
+          note.textContent = mismatchNote(drawer);
+          list.append(note);
+        }
+      }
+      peek.hidden = false;
+      placePeek(drawer);
+    }
+
+    document.querySelector(".drawer-scroll").addEventListener("mouseover", (event) => {
+      const drawer = event.target.closest(".drawer");
+      if (!drawer || drawer === peekDrawer) return;
+      clearTimeout(peekTimer);
+      peek.hidden = true;
+      peekDrawer = drawer;
+      peekTimer = setTimeout(() => showPeek(drawer), 1000);
+    });
+
+    document.querySelector(".drawer-scroll").addEventListener("mouseout", (event) => {
+      const drawer = event.target.closest(".drawer");
+      if (!drawer || drawer !== peekDrawer) return;
+      const next = event.relatedTarget;
+      if (next && (drawer.contains(next) || peek.contains(next))) return;
+      hidePeek();
+    });
+
+    peek.addEventListener("mouseout", (event) => {
+      const next = event.relatedTarget;
+      if (next && (peek.contains(next) || (peekDrawer && peekDrawer.contains(next)))) return;
+      hidePeek();
+    });
+
+    function closeMenu() {
+      menu.hidden = true;
+      menuForm.hidden = true;
+      menuError.hidden = true;
+      currentDrawer = null;
+    }
+
+    function openMenu(drawer, x, y) {
+      hidePeek();
+      currentDrawer = drawer;
+      menuCode.textContent = drawer.dataset.code;
+      menuForm.reset();
+      menuForm.hidden = true;
+      menuError.hidden = true;
+      renderMenu();
+      menuBlock.textContent = drawer.dataset.unavailable ? "Make available" : "Mark unavailable";
+      menu.hidden = false;
+      menuPoint = {x: x, y: y};
+      fitMenu();
+    }
+
+    async function postJson(url, body) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Could not save that.");
+      return payload;
+    }
+
+    document.querySelector(".drawer-scroll").addEventListener("contextmenu", (event) => {
+      const drawer = event.target.closest(".drawer");
+      if (!drawer) return;
+      event.preventDefault();
+      openMenu(drawer, event.clientX, event.clientY);
+    });
+
+    menuList.addEventListener("click", async (event) => {
+      const button = event.target.closest(".drawer-menu-choice");
+      if (!button || !currentDrawer) return;
+      const drawer = currentDrawer;
+      const categoryId = button.dataset.category;
+      const category = categories.find((item) => String(item.id) === categoryId) || null;
+      button.disabled = true;
+      try {
+        await postJson(menuData.assignUrl, {
+          drawer: drawer.dataset.code,
+          category_id: categoryId || null,
+        });
+        paintDrawer(drawer, category);
+        closeMenu();
+      } catch (error) {
+        menuError.textContent = error.message;
+        menuError.hidden = false;
+        button.disabled = false;
+      }
+    });
+
+    menuBlock.addEventListener("click", async () => {
+      if (!currentDrawer) return;
+      const drawer = currentDrawer;
+      const unavailable = !drawer.dataset.unavailable;
+      menuBlock.disabled = true;
+      menuError.hidden = true;
+      try {
+        await postJson(menuData.unavailableUrl, {
+          drawer: drawer.dataset.code,
+          unavailable: unavailable,
+        });
+        drawer.dataset.unavailable = unavailable ? "1" : "";
+        drawer.classList.toggle("is-unavailable", unavailable);
+        closeMenu();
+      } catch (error) {
+        menuError.textContent = error.message;
+        menuError.hidden = false;
+      } finally {
+        menuBlock.disabled = false;
+      }
+    });
+
+    menu.querySelector(".drawer-menu-new").addEventListener("click", () => {
+      menuForm.hidden = false;
+      menuError.hidden = true;
+      fitMenu();
+      menuForm.elements.name.focus();
+    });
+
+    menuForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!currentDrawer) return;
+      const drawer = currentDrawer;
+      const submit = menuForm.querySelector("button[type=submit]");
+      submit.disabled = true;
+      menuError.hidden = true;
+      const maxField = menuForm.elements.max_items.value.trim();
+      try {
+        const payload = await postJson(menuData.createUrl, {
+          drawer: drawer.dataset.code,
+          name: menuForm.elements.name.value,
+          color: menuForm.elements.color.value,
+          max_items: maxField,
+          keywords: menuForm.elements.keywords.value,
+        });
+        categories.push(payload.category);
+        addLegendRow(payload.category);
+        paintDrawer(drawer, payload.category);
+        closeMenu();
+      } catch (error) {
+        menuError.textContent = error.message;
+        menuError.hidden = false;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    document.addEventListener("mousedown", (event) => {
+      if (!menu.hidden && !menu.contains(event.target)) closeMenu();
+    });
+    const editForm = document.getElementById("drawer-edit");
+    const editError = editForm.querySelector(".drawer-menu-error");
+    let editingId = null;
+
+    function applyCategory(category) {
+      const index = categories.findIndex((item) => String(item.id) === String(category.id));
+      if (index >= 0) categories[index] = category;
+      const row = legendRow(category.id);
+      if (row) {
+        row.querySelector(".swatch").style.background = category.color;
+        row.querySelector(".legend-name").textContent = category.name;
+        row.querySelector(".legend-keywords").textContent = ruleLabel(category);
+        row.querySelector(".legend-max").textContent = category.max_items ? formatCount(category.max_items) : "—";
+      }
+      document.querySelectorAll('.drawer[data-category="' + category.id + '"]').forEach((drawer) => {
+        paintDrawer(drawer, category);
+      });
+    }
+
+    function closeEdit() {
+      editForm.hidden = true;
+      editError.hidden = true;
+      editingId = null;
+    }
+
+    function openEdit(category) {
+      closeMenu();
+      editingId = category.id;
+      editForm.querySelector(".drawer-edit-title").textContent = "Edit " + category.name;
+      editForm.elements.name.value = category.name;
+      editForm.elements.color.value = category.color;
+      editForm.elements.max_items.value = category.max_items || "";
+      editForm.elements.keywords.value = category.keywords || "";
+      editError.hidden = true;
+      editForm.hidden = false;
+      editForm.scrollIntoView({block: "nearest"});
+      editForm.elements.name.focus();
+    }
+
+    document.querySelector(".drawer-legend").addEventListener("click", (event) => {
+      const button = event.target.closest(".legend-edit");
+      if (!button) return;
+      const row = button.closest("tr");
+      const category = categories.find((item) => String(item.id) === row.dataset.category);
+      if (category) openEdit(category);
+    });
+
+    editForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!editingId) return;
+      const submit = editForm.querySelector("button[type=submit]");
+      submit.disabled = true;
+      editError.hidden = true;
+      const maxField = editForm.elements.max_items.value.trim();
+      const url = menuData.updateUrl.replace(/\/0$/, "/" + editingId);
+      try {
+        const payload = await postJson(url, {
+          name: editForm.elements.name.value,
+          color: editForm.elements.color.value,
+          max_items: maxField,
+          keywords: editForm.elements.keywords.value,
+        });
+        applyCategory(payload.category);
+        closeEdit();
+      } catch (error) {
+        editError.textContent = error.message;
+        editError.hidden = false;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    editForm.querySelector(".drawer-edit-cancel").addEventListener("click", closeEdit);
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeMenu();
+        closeEdit();
+        hidePeek();
+      }
+    });
+    window.addEventListener("scroll", () => {
+      closeMenu();
+      hidePeek();
+    }, true);
+
+    document.querySelectorAll(".drawer").forEach(markMismatch);
+  </script>
+</section>
+{% endblock %}

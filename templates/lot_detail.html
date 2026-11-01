@@ -19,7 +19,7 @@
 <p class="empty">This lot is pending details. Import BrickLink inventory lots added on a date. Until then it is not valid for sale comparison.</p>
 {% endif %}
 
-<div class="stats compact">
+<div class="stats compact lot-stats">
   <article>
     <span>Total to recover</span>
     <strong>{{ money(lot.cost_cents + lot.shipping_cents + lot.tax_cents + lot.handling_cents) }}</strong>
@@ -34,6 +34,16 @@
     <span>Profit</span>
     <strong>{{ money(lot.profit_cents) }}</strong>
     <em>{{ lot.recovered }}% of total recovered</em>
+  </article>
+  <article class="{% if lot.has_details %}{{ 'up' if lot.listed_value_cents >= lot.invested_cents else 'down' }}{% endif %}">
+    <span>Parts value</span>
+    <strong>{{ money(lot.listed_value_cents or 0) }}</strong>
+    {% if lot.has_details %}
+      {% set lift = (lot.listed_value_cents or 0) - lot.invested_cents %}
+      <em>{% if lift >= 0 %}{{ money(lift) }} above{% else %}{{ money(-lift) }} below{% endif %} the {{ money(lot.invested_cents) }} purchase</em>
+    {% else %}
+    <em>No parts uploaded yet</em>
+    {% endif %}
   </article>
 </div>
 

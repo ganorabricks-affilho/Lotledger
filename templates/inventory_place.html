@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Place parts · Inventory · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page place-page">
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Inventory</p>
+      <h1>Place parts</h1>
+      <p class="lede">Paste a BrickStore inventory XML. Calculate looks at the store and fills in a drawer remark. A part already stored keeps that remark, and its price becomes the highest price already listed for that item, color, and condition. A new part gets a drawer code such as AJ-09. A minifigure goes to the minifigure drawers, D17-01 through D17-24. Highlighted fields differ from the XML. Download writes a BrickStore file. Nothing is uploaded.</p>
+    </div>
+  </div>
+
+  {% if error %}
+  <p class="place-error">{{ error }}</p>
+  {% endif %}
+
+  {% if items %}
+  <div class="stats compact">
+    <article>
+      <span>Items</span>
+      <strong>{{ '{:,}'.format(summary.count) }}</strong>
+      <em>{% if skipped %}{{ '{:,}'.format(skipped) }} skipped with no quantity{% else %}in this paste{% endif %}</em>
+    </article>
+    <article>
+      <span>Already stored</span>
+      <strong>{{ '{:,}'.format(summary.stored) }}</strong>
+      <em>same item, color, and condition</em>
+    </article>
+    <article>
+      <span>Remarks changed</span>
+      <strong>{{ '{:,}'.format(summary.remarks) }}</strong>
+      <em>highlighted in the remarks column</em>
+    </article>
+    <article>
+      <span>Prices changed</span>
+      <strong>{{ '{:,}'.format(summary.prices) }}</strong>
+      <em>matched to the inventory high</em>
+    </article>
+  </div>
+  {% if summary.unplaced %}
+  <p class="lede">{{ '{:,}'.format(summary.unplaced) }} item{{ 's' if summary.unplaced != 1 else '' }} had no matching drawer. The remark is unchanged.</p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('inventory_place') }}" id="place-form">
+    <textarea name="source_xml" hidden>{{ xml }}</textarea>
+    <div class="panel">
+      <div class="table-scroll wide">
+        <table class="place-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th></th>
+              <th>Item</th>
+              <th>Description</th>
+              <th>Cond</th>
+              <th>Color</th>
+              <th>Qty</th>
+              <th>Price</th>
+              <th>Total</th>
+              <th>Sale</th>
+              <th>Comments</th>
+              <th>Remarks</th>
+              <th>Category</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in items %}
+            <tr>
+              <td class="num">{{ loop.index }}</td>
+              <td>
+                {% if item.image_url %}
+                <img class="thumb" src="{{ item.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
+                {% endif %}
+              </td>
+              <td class="item">
+                {% if item.catalog_url %}
+                <a href="{{ item.catalog_url }}" target="_blank" rel="noreferrer">{{ item.item_id }}</a>
+                {% else %}
+                <strong>{{ item.item_id }}</strong>
+                {% endif %}
+              </td>
+              <td class="place-name">{{ item.item_name or 'Not in the store yet' }}</td>
+              <td>{{ item.condition_label }}</td>
+              <td>{{ item.color_name or item.color_id or '—' }}</td>
+              <td>
+                <input name="item-{{ loop.index0 }}-qty" value="{{ item.qty }}" data-orig="{{ item.orig_qty }}" data-kind="qty" inputmode="numeric" class="{{ 'is-changed' if item.qty_changed else '' }}" autocomplete="off">
+              </td>
+              <td>
+                <input name="item-{{ loop.index0 }}-price" value="{{ item.price }}" data-orig="{{ item.orig_price }}" data-kind="price" inputmode="decimal" class="{{ 'is-changed' if item.price_changed else '' }}" autocomplete="off">
+                {% if item.price_note %}<small class="place-note">{{ item.price_note }}</small>{% endif %}
+              </td>
+              <td class="num place-total">{{ '%.3f'|format(item.qty * (item.price|float)) }}</td>
+              <td>
+                <input name="item-{{ loop.index0 }}-sale" value="{{ item.sale }}" data-orig="{{ item.orig_sale }}" data-kind="sale" inputmode="numeric" placeholder="—" class="{{ 'is-changed' if item.sale_changed else '' }}" autocomplete="off">
+              </td>
+              <td>
+                <input name="item-{{ loop.index0 }}-comments" value="{{ item.comments }}" data-orig="{{ item.orig_comments }}" data-kind="text" class="{{ 'is-changed' if item.comments_changed else '' }}" autocomplete="off">
+              </td>
+              <td>
+                <input name="item-{{ loop.index0 }}-remarks" value="{{ item.remarks }}" data-orig="{{ item.orig_remarks }}" data-kind="text" class="{{ 'is-changed' if item.remark_changed else '' }}" autocomplete="off">
+                {% if item.note %}<small class="place-note">{{ item.note }}</small>{% endif %}
+              </td>
+              <td>{{ item.category_name or item.category_id or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="place-actions">
+      <button type="submit" name="action" value="download">Download XML</button>
+      <button type="button" class="btn ghost" id="place-copy">Copy XML</button>
+      <span class="place-copy-status" id="place-copy-status" role="status"></span>
+      <a class="btn ghost" href="{{ url_for('inventory_place') }}">Start over</a>
+    </div>
+  </form>
+  {% else %}
+  <form method="post" action="{{ url_for('inventory_place') }}" class="panel place-paste">
+    <label>BrickStore XML
+      <textarea name="xml" rows="14" placeholder="<INVENTORY>…</INVENTORY>">{{ xml }}</textarea>
+    </label>
+    <button type="submit" name="action" value="calculate">Calculate</button>
+  </form>
+  {% endif %}
+</section>
+{% if items %}
+<script>
+  const form = document.getElementById("place-form");
+
+  function moneyMilli(value) {
+    const number = Number(String(value == null ? "" : value).replace(/[$,]/g, ""));
+    if (!Number.isFinite(number)) return null;
+    return Math.round(number * 1000);
+  }
+
+  function fieldChanged(input) {
+    if (input.dataset.kind === "price") {
+      return moneyMilli(input.value) !== moneyMilli(input.dataset.orig);
+    }
+    if (input.dataset.kind === "qty" || input.dataset.kind === "sale") {
+      return String(input.value).trim() !== String(input.dataset.orig || "").trim();
+    }
+    return input.value.trim() !== (input.dataset.orig || "");
+  }
+
+  function refresh(row) {
+    row.querySelectorAll("input").forEach((input) => {
+      input.classList.toggle("is-changed", fieldChanged(input));
+    });
+    const qty = Number(row.querySelector('[name$="-qty"]').value);
+    const price = Number(String(row.querySelector('[name$="-price"]').value).replace(/[$,]/g, ""));
+    const total = row.querySelector(".place-total");
+    if (Number.isFinite(qty) && Number.isFinite(price)) {
+      total.textContent = (qty * price).toLocaleString(undefined, {minimumFractionDigits: 3, maximumFractionDigits: 3});
+    } else {
+      total.textContent = "—";
+    }
+  }
+
+  form.querySelectorAll("tbody tr").forEach((row) => {
+    refresh(row);
+    row.addEventListener("input", () => refresh(row));
+  });
+
+  const copyButton = document.getElementById("place-copy");
+  const copyStatus = document.getElementById("place-copy-status");
+  copyButton.addEventListener("click", async () => {
+    copyButton.disabled = true;
+    copyStatus.textContent = "";
+    try {
+      const body = new FormData(form);
+      body.set("action", "copy");
+      const response = await fetch(form.getAttribute("action"), {method: "POST", body});
+      const xml = await response.text();
+      if (!response.ok) {
+        copyStatus.textContent = xml;
+        return;
+      }
+      await navigator.clipboard.writeText(xml);
+      copyStatus.textContent = "Copied to the clipboard.";
+    } catch (error) {
+      copyStatus.textContent = "Could not copy. Click the page and try again.";
+    } finally {
+      copyButton.disabled = false;
+    }
+  });
+</script>
+{% endif %}
+{% endblock %}

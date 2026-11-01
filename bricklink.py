@@ -240,6 +240,12 @@ def item_price_guide(
     }
 
 
+def list_categories(creds: dict) -> list:
+    """BrickLink catalog categories: category_id, category_name, parent_id."""
+    data = _data(call(creds, "categories", {}, timeout=30))
+    return data if isinstance(data, list) else []
+
+
 def list_inventories(creds: dict, params: dict = None) -> list:
     data = _data(call(creds, "inventories", params or {}, timeout=120))
     return data if isinstance(data, list) else []
