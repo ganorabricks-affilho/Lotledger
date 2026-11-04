@@ -505,6 +505,170 @@ def list_lots():
     return lots
 
 
+def _allocate_cents(total: int, weights: list) -> list:
+    """Split integer cents by weight so the shares add up to total."""
+    count = len(weights)
+    if count == 0:
+        return []
+    total = int(total or 0)
+    if total == 0:
+        return [0] * count
+    sign = -1 if total < 0 else 1
+    total = abs(total)
+    safe = [max(0, int(weight or 0)) for weight in weights]
+    weight_sum = sum(safe)
+    if weight_sum <= 0:
+        shares = [0] * count
+        shares[0] = total
+        return [sign * share for share in shares]
+    raw = [total * weight for weight in safe]
+    shares = [value // weight_sum for value in raw]
+    leftover = total - sum(shares)
+    order = sorted(
+        range(count),
+        key=lambda index: (raw[index] % weight_sum, safe[index], -index),
+        reverse=True,
+    )
+    for index in order:
+        if leftover <= 0:
+            break
+        shares[index] += 1
+        leftover -= 1
+    return [sign * share for share in shares]
+
+
+def _allocate_part_costs(invested_cents: int, items: list, matched_lines: list) -> dict:
+    """Give each listing row a share of the lot total, weighted by listing price.
+
+    A row's weight is quantity × unit price. When pieces sell, that row's cost
+    is split the same way across the sold quantity, and profit is net gain minus
+    the cost of the pieces that sold.
+    """
+    for line in matched_lines:
+        line["part_cost_cents"] = None
+        line["part_profit_cents"] = None
+    weights = [
+        max(0, int(item.get("qty") or 0) * int(item.get("price_cents") or 0))
+        for item in items
+    ]
+    # No listing prices means there is nothing to weight the lot total against.
+    if sum(weights) <= 0:
+        shares = [0] * len(items)
+    else:
+        shares = _allocate_cents(invested_cents, weights)
+    lines_by_bl = {}
+    for line in matched_lines:
+        bl_lot_id = str(line.get("bl_lot_id") or "")
+        if bl_lot_id:
+            lines_by_bl.setdefault(bl_lot_id, []).append(line)
+
+    sold_cost_total = 0
+    profit_total = 0
+    for item, line_cost in zip(items, shares):
+        qty = int(item.get("qty") or 0)
+        item["part_cost_cents"] = line_cost
+        # Listing money is cents; money3() is thousandths of a dollar (10 per cent).
+        item["unit_cost_milli"] = int(round(line_cost * 10 / qty)) if qty else 0
+        bl_lot_id = str(item.get("bl_lot_id") or "")
+        sold_lines = lines_by_bl.get(bl_lot_id, []) if bl_lot_id else []
+        sold_qty = sum(int(line.get("qty") or 0) for line in sold_lines)
+        if sold_lines and sold_qty > 0:
+            sold_weights = [int(line.get("qty") or 0) for line in sold_lines]
+            if qty > sold_qty:
+                piece_shares = _allocate_cents(line_cost, sold_weights + [qty - sold_qty])
+                piece_shares = piece_shares[:-1]
+            else:
+                piece_shares = _allocate_cents(line_cost, sold_weights)
+            sold_cost = sum(piece_shares)
+            for line, share in zip(sold_lines, piece_shares):
+                current = line.get("part_cost_cents")
+                line["part_cost_cents"] = share if current is None else current + share
+        else:
+            sold_cost = 0
+        item["sold_cost_cents"] = sold_cost
+        if sold_qty > 0 or int(item.get("sale_net_gain_cents") or 0):
+            item["part_profit_cents"] = int(item.get("sale_net_gain_cents") or 0) - sold_cost
+            profit_total += item["part_profit_cents"]
+        else:
+            item["part_profit_cents"] = None
+        sold_cost_total += sold_cost
+
+    for line in matched_lines:
+        if line.get("part_cost_cents") is None:
+            continue
+        line["part_profit_cents"] = int(line.get("net_gain_cents") or 0) - int(line["part_cost_cents"])
+    return {
+        "sold_cost_cents": sold_cost_total,
+        "parts_profit_cents": profit_total,
+        "part_cost_cents": sum(int(item.get("part_cost_cents") or 0) for item in items),
+    }
+
+
+def part_costs_for_order_lines(lot_id: int) -> dict:
+    """Map order_line id -> lot cost allocated to that sold line."""
+    with get_conn() as conn:
+        lot = conn.execute(
+            """
+            SELECT cost_cents, shipping_cents, tax_cents, handling_cents
+            FROM lots WHERE id = ?
+            """,
+            (lot_id,),
+        ).fetchone()
+        if lot is None:
+            return {}
+        items = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT qty, price_cents, bl_lot_id FROM listing_items WHERE lot_id = ?",
+                (lot_id,),
+            )
+        ]
+        lines = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT order_lines.id, order_lines.bl_lot_id, order_lines.qty, order_lines.net_gain_cents
+                FROM order_lines
+                JOIN orders ON orders.id = order_lines.order_id
+                WHERE order_lines.lot_id = ?
+                  AND instr(lower(coalesce(orders.status, '')), 'cancel') = 0
+                """,
+                (lot_id,),
+            )
+        ]
+    invested = (
+        int(lot["cost_cents"] or 0)
+        + int(lot["shipping_cents"] or 0)
+        + int(lot["tax_cents"] or 0)
+        + int(lot["handling_cents"] or 0)
+    )
+    _allocate_part_costs(invested, items, lines)
+    return {
+        int(line["id"]): line.get("part_cost_cents")
+        for line in lines
+        if line.get("part_cost_cents") is not None
+    }
+
+
+def attach_part_costs(lines: list) -> None:
+    """Add lot cost and profit to order lines that are matched to a lot."""
+    by_lot = {}
+    for line in lines:
+        if line.get("lot_id"):
+            by_lot.setdefault(int(line["lot_id"]), []).append(line)
+    for line in lines:
+        line.setdefault("part_cost_cents", None)
+        line.setdefault("part_profit_cents", None)
+    for lot_id, lot_lines in by_lot.items():
+        costs = part_costs_for_order_lines(lot_id)
+        for line in lot_lines:
+            cost = costs.get(int(line["id"]))
+            if cost is None:
+                continue
+            line["part_cost_cents"] = cost
+            line["part_profit_cents"] = int(line.get("net_gain_cents") or 0) - cost
+
+
 def get_lot(lot_id: int):
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM lots WHERE id = ?", (lot_id,)).fetchone()
@@ -588,10 +752,22 @@ def get_lot(lot_id: int):
             "listed_value_cents": sum(item["qty"] * item["price_cents"] for item in items),
         }
     )
+    totals = _allocate_part_costs(lot["invested_cents"], items, matched)
+    for group in matched_groups:
+        costs = [line.get("part_cost_cents") for line in group["lines"]]
+        if costs and all(cost is not None for cost in costs):
+            group["part_cost_cents"] = sum(costs)
+            group["part_profit_cents"] = int(group["net_cents"]) - group["part_cost_cents"]
+        else:
+            group["part_cost_cents"] = None
+            group["part_profit_cents"] = None
     lot["matched_lines"] = matched
     lot["matched_groups"] = matched_groups
     lot["listed_items"] = items
     lot["details_locked"] = bool(lot.get("details_locked"))
+    lot["sold_cost_cents"] = totals["sold_cost_cents"]
+    lot["parts_profit_cents"] = totals["parts_profit_cents"]
+    lot["part_cost_cents"] = totals["part_cost_cents"]
     return lot
 
 

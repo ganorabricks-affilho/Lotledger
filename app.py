@@ -461,6 +461,18 @@ def order_detail(order_id):
     if order is None:
         flash("Order not found.")
         return redirect(url_for("sales"))
+    db.attach_part_costs(order["lines"])
+    order["part_cost_cents"] = sum(
+        int(line["part_cost_cents"])
+        for line in order["lines"]
+        if line.get("part_cost_cents") is not None
+    )
+    order["parts_profit_cents"] = sum(
+        int(line["part_profit_cents"])
+        for line in order["lines"]
+        if line.get("part_profit_cents") is not None
+    )
+    order["has_part_cost"] = any(line.get("part_cost_cents") is not None for line in order["lines"])
     return render_template("order_detail.html", order=order)
 
 

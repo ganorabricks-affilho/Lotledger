@@ -55,7 +55,7 @@
   <div class="panel-head">
     <h2>Listing details{% if lot.details_locked %} · locked{% endif %}</h2>
     {% if lot.has_details %}
-    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} pcs · listed value {{ money(lot.listed_value_cents) }}</span>
+    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} pcs · listed value {{ money(lot.listed_value_cents) }}{% if lot.sold_cost_cents %} · sold cost {{ money(lot.sold_cost_cents) }} · profit {{ money(lot.parts_profit_cents) }}{% endif %}</span>
     {% endif %}
   </div>
   {% if lot.has_details or lot.details_locked %}
@@ -156,7 +156,7 @@
   {% endif %}
   {% endif %}
   {% if lot.has_details %}
-  <p class="lede">From {{ lot.details_filename }}{% if lot.details_imported_at %} · imported {{ lot.details_imported_at }}{% endif %}</p>
+  <p class="lede">From {{ lot.details_filename }}{% if lot.details_imported_at %} · imported {{ lot.details_imported_at }}{% endif %}. Part cost is this row’s share of the {{ money(lot.invested_cents) }} lot total, in proportion to its listing price (quantity × unit price). Profit on a match is net gain minus the cost of the pieces that sold.</p>
   {% set match_counts = namespace(full=0, partial=0, none=0) %}
   {% for item in lot.listed_items %}
     {% if item.match_state == 'full' %}
@@ -185,7 +185,9 @@
           <th>Qty</th>
           <th>Unit price</th>
           <th>Line total</th>
+          <th>Part cost</th>
           <th>Net gain</th>
+          <th>Profit</th>
           <th></th>
         </tr>
       </thead>
@@ -219,10 +221,31 @@
           <td>{{ money(item.price_cents) }}</td>
           <td>{{ money(item.qty * item.price_cents) }}</td>
           <td>
+            {{ money(item.part_cost_cents) }}
+            {% if item.qty > 1 and item.match_state != 'partial' %}
+            <small>{% if item.unit_cost_milli % 10 == 0 %}{{ money(item.unit_cost_milli // 10) }}{% else %}{{ money3(item.unit_cost_milli) }}{% endif %} each</small>
+            {% endif %}
+            {% if item.match_state == 'partial' %}
+            <small>sold {{ money(item.sold_cost_cents) }}</small>
+            {% endif %}
+          </td>
+          <td>
             {% if item.match_state and item.matched_order_id %}
             <a class="{{ 'up' if item.sale_net_gain_cents >= 0 else 'down' }}" href="{{ url_for('order_detail', order_id=item.matched_order_id) }}">{{ money(item.sale_net_gain_cents) }}</a>
             {% elif item.match_state %}
             <span class="{{ 'up' if item.sale_net_gain_cents >= 0 else 'down' }}">{{ money(item.sale_net_gain_cents) }}</span>
+            {% else %}
+            —
+            {% endif %}
+          </td>
+          <td>
+            {% if item.part_profit_cents is not none %}
+              {% if item.matched_order_id %}
+              <a class="{{ 'up' if item.part_profit_cents >= 0 else 'down' }}" href="{{ url_for('order_detail', order_id=item.matched_order_id) }}">{{ money(item.part_profit_cents) }}</a>
+              {% else %}
+              <span class="{{ 'up' if item.part_profit_cents >= 0 else 'down' }}">{{ money(item.part_profit_cents) }}</span>
+              {% endif %}
+              {% if item.match_state == 'partial' %}<small>on {{ item.sold_qty }} sold</small>{% endif %}
             {% else %}
             —
             {% endif %}
@@ -246,9 +269,11 @@
       </tbody>
       <tfoot>
         <tr>
-          <td colspan="7">Listed value (qty × unit price)</td>
+          <td colspan="7">Lot totals</td>
           <td>{{ money(lot.listed_value_cents) }}</td>
+          <td>{{ money(lot.part_cost_cents) }}</td>
           <td class="{{ 'up' if lot.net_cents >= 0 else 'down' }}">{{ money(lot.net_cents) }}</td>
+          <td class="{{ 'up' if lot.parts_profit_cents >= 0 else 'down' }}">{{ money(lot.parts_profit_cents) }}</td>
           <td></td>
         </tr>
       </tfoot>
@@ -269,7 +294,9 @@
       <tr>
         <th>Item</th>
         <th>Qty</th>
+        <th>Part cost</th>
         <th>Net gain</th>
+        <th>Profit</th>
       </tr>
     </thead>
     <tbody>
@@ -282,13 +309,17 @@
           <small>{{ group.lines|length }} line{{ 's' if group.lines|length != 1 else '' }}</small>
         </td>
         <td>{{ group.qty }}</td>
+        <td>{% if group.part_cost_cents is not none %}{{ money(group.part_cost_cents) }}{% else %}—{% endif %}</td>
         <td class="{{ 'up' if group.net_cents >= 0 else 'down' }}">{{ money(group.net_cents) }}</td>
+        <td class="{% if group.part_profit_cents is not none %}{{ 'up' if group.part_profit_cents >= 0 else 'down' }}{% endif %}">{% if group.part_profit_cents is not none %}{{ money(group.part_profit_cents) }}{% else %}—{% endif %}</td>
       </tr>
       {% for line in group.lines %}
       <tr>
         <td>{{ line.item_id }}<small>{{ line.item_name }}</small></td>
         <td>{{ line.qty }}</td>
+        <td>{% if line.part_cost_cents is not none %}{{ money(line.part_cost_cents) }}{% else %}—{% endif %}</td>
         <td class="{{ 'up' if line.net_gain_cents >= 0 else 'down' }}">{{ money(line.net_gain_cents) }}</td>
+        <td class="{% if line.part_profit_cents is not none %}{{ 'up' if line.part_profit_cents >= 0 else 'down' }}{% endif %}">{% if line.part_profit_cents is not none %}{{ money(line.part_profit_cents) }}{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
       {% endfor %}

@@ -111,6 +111,8 @@
           <th>Cost</th>
           <th>Line total</th>
           <th>Net gain</th>
+          <th>Lot cost</th>
+          <th>Profit</th>
           <th>Lot</th>
           <th></th>
         </tr>
@@ -130,6 +132,8 @@
           <td>{{ money3(line.price_cents) }}</td>
           <td>{{ money3(line.qty * line.price_cents) }}</td>
           <td class="{{ 'up' if line.net_gain_cents >= 0 else 'down' }}">{{ money(line.net_gain_cents) }}</td>
+          <td>{% if line.part_cost_cents is not none %}{{ money(line.part_cost_cents) }}{% else %}—{% endif %}</td>
+          <td class="{% if line.part_profit_cents is not none %}{{ 'up' if line.part_profit_cents >= 0 else 'down' }}{% endif %}">{% if line.part_profit_cents is not none %}{{ money(line.part_profit_cents) }}{% else %}—{% endif %}</td>
           <td>
             {% if line.lot_id %}
             <a href="{{ url_for('lot_detail', lot_id=line.lot_id) }}">#{{ line.lot_id }}{% if line.lot_title %} · {{ line.lot_title }}{% endif %}</a>
@@ -157,6 +161,8 @@
           <td colspan="4">Totals</td>
           <td>{{ money3(order.lines_cents) }}</td>
           <td>{{ money(order.net_cents) }}</td>
+          <td>{% if order.has_part_cost %}{{ money(order.part_cost_cents) }}{% endif %}</td>
+          <td class="{% if order.has_part_cost %}{{ 'up' if order.parts_profit_cents >= 0 else 'down' }}{% endif %}">{% if order.has_part_cost %}{{ money(order.parts_profit_cents) }}{% endif %}</td>
           <td colspan="2"></td>
         </tr>
       </tfoot>
