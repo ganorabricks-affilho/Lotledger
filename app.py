@@ -524,6 +524,16 @@ def settings():
             for key in bricklink.CRED_KEYS:
                 db.set_setting(key, "")
             flash("BrickLink credentials removed.")
+        elif action == "clear_bricklink_affiliate":
+            db.set_setting(bricklink.AFFILIATE_KEY_SETTING, "")
+            flash("BrickLink price-guide key removed.")
+        elif action == "save_bricklink_affiliate":
+            key = request.form.get("bricklink_affiliate_key", "").strip()
+            if not key:
+                flash("Paste a BrickLink price-guide key, or use Remove key.")
+            else:
+                db.set_setting(bricklink.AFFILIATE_KEY_SETTING, key)
+                flash("BrickLink price-guide key saved.")
         elif action == "save_bricklink":
             fields = {
                 "bricklink_consumer_key": request.form.get("bricklink_consumer_key", "").strip(),
@@ -546,12 +556,15 @@ def settings():
         return redirect(url_for("settings"))
     key = db.get_setting("brickowl_api_key")
     token = db.get_setting("bricklink_token")
+    affiliate = (db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip()
     return render_template(
         "settings.html",
         has_brickowl_key=bool(key),
         key_hint=f"…{key[-4:]}" if len(key) >= 4 else "",
         has_bricklink_creds=db.has_bricklink_creds(),
         bricklink_hint=f"…{token[-4:]}" if len(token) >= 4 else "",
+        has_affiliate_key=bool(affiliate),
+        affiliate_hint=f"…{affiliate[-4:]}" if len(affiliate) >= 4 else "",
     )
 
 
@@ -1323,75 +1336,102 @@ def _forge_prices_due(fig_ids, prices: dict) -> list:
     return due
 
 
+def _save_forge_guide(fig_id: str, guide: dict) -> None:
+    db.save_minifig_price(
+        {
+            "fig_id": fig_id,
+            "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            **guide,
+        }
+    )
+
+
+def _fetch_forge_price_batch(api_key: str, fig_ids: list) -> list:
+    """Fetch one batch, splitting it when a single bad id would fail the whole call."""
+    delay = 1.0
+    for attempt in range(5):
+        try:
+            return bricklink.price_guide_batch(
+                api_key,
+                fig_ids,
+                item_type="MINIFIG",
+                color_id=0,
+                **FORGE_GUIDE,
+            )
+        except bricklink.BrickLinkThrottle:
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+        except bricklink.BrickLinkHTTPError as exc:
+            if exc.status in (401, 403):
+                raise
+            # A bad catalog id fails the whole batch. Split until that id is alone.
+            if exc.status == 400 and len(fig_ids) > 1:
+                mid = max(1, len(fig_ids) // 2)
+                return _fetch_forge_price_batch(api_key, fig_ids[:mid]) + _fetch_forge_price_batch(
+                    api_key, fig_ids[mid:]
+                )
+            if attempt == 4 or exc.status == 400:
+                label = fig_ids[0] if len(fig_ids) == 1 else f"{len(fig_ids)} figures"
+                print(f"forge price skipped {label}: {exc}", flush=True)
+                return []
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+    print(f"forge prices gave up on {len(fig_ids)} figures after throttling", flush=True)
+    return []
+
+
 def refresh_forge_prices(fig_ids, force: bool = False) -> int:
-    """Fill the local price cache from BrickLink. Returns how many guides were fetched."""
+    """Fill the local price cache from the affiliate price-guide batch. Returns rows saved."""
     wanted = list(dict.fromkeys(fig_ids))
     prices = db.load_minifig_prices(**FORGE_GUIDE)
     due = wanted if force else _forge_prices_due(wanted, prices)
     if not due:
         return 0
-    creds = bricklink.creds_from_settings(db.get_setting)
+    api_key = (db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip()
+    if not api_key:
+        raise ValueError("Add a BrickLink affiliate API key in Settings first.")
     print(f"forge prices fetching {len(due)}", flush=True)
     fresh_after = datetime.now(timezone.utc) - timedelta(days=FORGE_PRICE_DAYS)
     fetched = 0
-    for index, fig_id in enumerate(due, 1):
-        if not force:
-            stamp = _price_fetched_at(db.minifig_price_fetched_at(fig_id, **FORGE_GUIDE))
-            if stamp is not None and stamp >= fresh_after:
-                continue
-        delay = 1.0
-        guide = None
-        for attempt in range(5):
-            try:
-                guide = bricklink.item_price_guide(creds, fig_id, item_type="MINIFIG", **FORGE_GUIDE)
-                break
-            except bricklink.BrickLinkThrottle:
-                time.sleep(delay)
-                delay = min(delay * 2, 30)
-            except ValueError as exc:
-                text = str(exc)
-                if any(code in text for code in ("HTTP 400", "HTTP 403", "HTTP 404")):
-                    print(f"forge price skipped {fig_id}: {text}", flush=True)
-                    guide = None
-                    break
-                if attempt == 4:
-                    print(f"forge price skipped {fig_id}: {text}", flush=True)
-                    guide = None
-                    break
-                time.sleep(delay)
-                delay = min(delay * 2, 30)
-        if guide is None:
-            time.sleep(0.2)
+    step = bricklink.PRICE_GUIDE_BATCH_LIMIT
+    for start in range(0, len(due), step):
+        chunk = []
+        for fig_id in due[start : start + step]:
+            if not force:
+                stamp = _price_fetched_at(db.minifig_price_fetched_at(fig_id, **FORGE_GUIDE))
+                if stamp is not None and stamp >= fresh_after:
+                    continue
+            chunk.append(fig_id)
+        if not chunk:
             continue
-        db.save_minifig_price(
-            {
-                "fig_id": fig_id,
-                "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                **guide,
-            }
-        )
-        fetched += 1
-        if index % 25 == 0 or index == len(due):
-            price = guide.get("qty_avg_price_milli")
-            shown = f"${price / 1000:.2f}" if price is not None else "no sales"
-            print(f"forge prices {index}/{len(due)} {fig_id} {shown}", flush=True)
-        time.sleep(0.2)
+        guides = _fetch_forge_price_batch(api_key, chunk)
+        by_id = {guide["item_no"]: guide for guide in guides}
+        for fig_id in chunk:
+            guide = by_id.get(fig_id)
+            if guide is None:
+                continue
+            _save_forge_guide(fig_id, guide)
+            fetched += 1
+        print(f"forge prices {min(start + step, len(due))}/{len(due)} saved {fetched}", flush=True)
     return fetched
 
 
-def _start_forge_price_refresh(fig_ids) -> None:
+def _start_forge_price_refresh(fig_ids, force: bool = False) -> str:
+    """Start a background price fetch. Returns started, busy, nokey, or empty."""
     global _price_refresh_running
-    if not fig_ids or not db.has_bricklink_creds():
-        return
+    if not fig_ids:
+        return "empty"
+    if not (db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip():
+        return "nokey"
     with _price_refresh_lock:
         if _price_refresh_running:
-            return
+            return "busy"
         _price_refresh_running = True
 
     def work():
         global _price_refresh_running
         try:
-            refresh_forge_prices(fig_ids)
+            refresh_forge_prices(fig_ids, force=force)
         except Exception as exc:
             print(f"forge price refresh failed: {exc}", flush=True)
         finally:
@@ -1399,6 +1439,12 @@ def _start_forge_price_refresh(fig_ids) -> None:
                 _price_refresh_running = False
 
     threading.Thread(target=work, daemon=True).start()
+    return "started"
+
+
+@app.route("/forge/prices/status")
+def forge_price_status():
+    return jsonify({"running": _price_refresh_running})
 
 
 @app.route("/forge")
@@ -1431,7 +1477,44 @@ def forge():
         result=result,
         filters={"q": q, "page": result["page"]},
         generated_at=generated.strftime("%b %-d, %Y") if generated else "",
+        has_affiliate_key=bool((db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip()),
+        price_refresh_running=_price_refresh_running,
     )
+
+
+@app.route("/forge/prices", methods=["POST"])
+def forge_refresh_prices():
+    q = (request.form.get("q") or "").strip()
+    try:
+        page = max(1, int(request.form.get("page") or 1))
+    except ValueError:
+        page = 1
+    try:
+        catalog = minifig_catalog.load()
+        result = minifig_catalog.buildable_figures(
+            catalog,
+            db.inventory_part_quantities(),
+            q=q,
+            page=page,
+            prices=db.load_minifig_prices(**FORGE_GUIDE),
+        )
+    except minifig_catalog.CatalogError as exc:
+        flash(str(exc))
+        return redirect(url_for("forge", q=q, page=page))
+    status = _start_forge_price_refresh(result["buildable_ids"], force=True)
+    count = len(result["buildable_ids"])
+    if status == "started":
+        flash(
+            f"Refreshing prices for {count} figure{'s' if count != 1 else ''}. "
+            "The page reloads when the new averages are in."
+        )
+    elif status == "busy":
+        flash("A price refresh is already running. Reload in a moment.")
+    elif status == "nokey":
+        flash("Add a BrickLink price-guide key in Settings first.")
+    else:
+        flash("No buildable figures to price.")
+    return redirect(url_for("forge", q=q, page=page))
 
 
 @app.route("/forge/parts")

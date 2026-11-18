@@ -259,6 +259,23 @@ td small, td a + small { display: block; }
   white-space: nowrap;
   padding-right: 14px;
 }
+.customer-ship {
+  margin: 8px 0 0;
+  line-height: 1.35;
+}
+.customer-ship span {
+  display: block;
+  color: var(--muted);
+}
+.sales-orders td.customer {
+  white-space: normal;
+  max-width: 16rem;
+  line-height: 1.3;
+}
+.sales-orders td.customer small {
+  color: var(--muted);
+  font-weight: 400;
+}
 .sales-orders .ext-col {
   width: 1.5rem;
   padding-right: 6px !important;
@@ -419,7 +436,13 @@ input, select, textarea {
   margin-top: 4px;
 }
 .filters input[name="q"] { min-width: 260px; }
-.filters button { margin-bottom: 1px; }
+.filters form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  margin: 0;
+}
 .pager, .pager-note { margin: 8px 0 16px; }
 .pager { display: flex; gap: 16px; align-items: baseline; }
 td.clip {

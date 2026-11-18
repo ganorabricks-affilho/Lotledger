@@ -6,6 +6,12 @@
   <div>
     <h1>{{ order.platform }} #{{ order.order_number }}</h1>
     <p class="lede">{{ order.sold_on }}{% if order.status %} · {{ order.status }}{% endif %}{% if order.payment_method %} · {{ order.payment_method }}{% endif %} · {{ order.display_qty }} quantity · {{ order.display_lots }} lots</p>
+    {% if order.customer_name or order.customer_address %}
+    <p class="customer-ship">
+      {% if order.customer_name %}<strong>{{ order.customer_name }}</strong>{% endif %}
+      {% if order.customer_address %}<span>{{ order.customer_address }}</span>{% endif %}
+    </p>
+    {% endif %}
   </div>
   <form method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete order {{ order.order_number }} and its line items? You can reimport it later.')">
     <button class="danger" type="submit">Delete order</button>

@@ -10,7 +10,10 @@ import urllib.request
 from datetime import datetime, timezone
 
 BASE = "https://api.bricklink.com/api/store/v1"
+AFFILIATE_PRICE_URL = "https://api.bricklink.com/api/affiliate/v1/price_guide_batch"
 USER_AGENT = "Lotledger/0.1 (local BrickLink import)"
+PRICE_GUIDE_BATCH_LIMIT = 500
+AFFILIATE_KEY_SETTING = "bricklink_affiliate_key"
 
 CRED_KEYS = (
     "bricklink_consumer_key",
@@ -186,6 +189,164 @@ def creds_from_settings(get_setting) -> dict:
 
 class BrickLinkThrottle(ValueError):
     """BrickLink asked the client to slow down."""
+
+
+class BrickLinkHTTPError(ValueError):
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
+_BATCH_GUIDE_SLOT = {
+    ("stock", "N"): "inventory_new",
+    ("stock", "U"): "inventory_used",
+    ("sold", "N"): "ordered_new",
+    ("sold", "U"): "ordered_used",
+}
+
+
+def _ratio_milli(total, count: int):
+    """Turn a batch total into a per-unit price in thousandths of a dollar."""
+    if count <= 0 or total is None or str(total).strip() == "":
+        return None
+    try:
+        value = float(str(total).replace(",", "").replace("$", ""))
+    except ValueError:
+        return None
+    return int(round(value / count * 1000))
+
+
+def guide_from_batch_entry(
+    entry: dict,
+    guide_type: str = "sold",
+    new_or_used: str = "U",
+    currency_code: str = "USD",
+) -> dict:
+    """Map one affiliate batch row onto the fields the price cache stores.
+
+    The batch names are the ones BrickStore reads: unit_quantity is the piece
+    count, total_quantity is the number of sales. Qty-average is
+    total_qty_price / pieces. The plain average is total_price / sales.
+    """
+    item = entry.get("item") if isinstance(entry.get("item"), dict) else {}
+    slot = _BATCH_GUIDE_SLOT.get((guide_type, new_or_used), "ordered_used")
+    block = entry.get(slot) if isinstance(entry.get(slot), dict) else {}
+    pieces = to_int(block.get("unit_quantity"))
+    sales = to_int(block.get("total_quantity"))
+    priced = sales > 0
+    return {
+        "item_no": str(item.get("no") or ""),
+        "item_type": str(item.get("type") or ""),
+        "color_id": to_int(entry.get("color_id")),
+        "guide_type": guide_type,
+        "new_or_used": new_or_used,
+        "currency_code": currency_code,
+        "qty_avg_price_milli": _ratio_milli(block.get("total_qty_price"), pieces) if priced else None,
+        "avg_price_milli": _ratio_milli(block.get("total_price"), sales) if priced else None,
+        "min_price_milli": money_milli(block.get("min_price")) if priced else None,
+        "max_price_milli": money_milli(block.get("max_price")) if priced else None,
+        "unit_quantity": sales,
+        "total_quantity": pieces,
+    }
+
+
+def price_guide_batch(
+    api_key: str,
+    item_nos,
+    item_type: str = "MINIFIG",
+    color_id: int = 0,
+    guide_type: str = "sold",
+    new_or_used: str = "U",
+    currency_code: str = "USD",
+    vat_type: int = 0,
+) -> list:
+    """POST a batch of catalog items to the affiliate price-guide endpoint.
+
+    Returns one guide per item BrickLink answered, in the same shape as
+    item_price_guide plus item_no. At most 500 items per call.
+    """
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("A BrickLink affiliate API key is required.")
+    nos = []
+    for number in item_nos or []:
+        text = str(number or "").strip()
+        if text and text not in nos:
+            nos.append(text)
+    if not nos:
+        return []
+    if len(nos) > PRICE_GUIDE_BATCH_LIMIT:
+        raise ValueError(f"Price guide batches are limited to {PRICE_GUIDE_BATCH_LIMIT} items.")
+    query = urllib.parse.urlencode(
+        {
+            "currency_code": currency_code,
+            "precision": "4",
+            "vat_type": str(int(vat_type)),
+            "api_key": key,
+        }
+    )
+    url = f"{AFFILIATE_PRICE_URL}?{query}"
+    payload = json.dumps(
+        [
+            {"color_id": int(color_id), "item": {"no": number, "type": item_type}}
+            for number in nos
+        ],
+        ensure_ascii=False,
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        status = exc.code
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not reach BrickLink: {exc.reason}") from exc
+    if status == 429:
+        raise BrickLinkThrottle("BrickLink is throttling price requests.")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BrickLinkHTTPError(
+            f"BrickLink price guide batch returned HTTP {status} with a non-JSON body.",
+            status,
+        ) from exc
+    meta = parsed.get("meta") if isinstance(parsed, dict) else None
+    code = None
+    message = ""
+    if isinstance(meta, dict):
+        try:
+            code = int(meta.get("code"))
+        except (TypeError, ValueError):
+            code = None
+        message = str(meta.get("description") or meta.get("message") or "")
+    if status >= 400 or (code is not None and code != 200):
+        detail = f" {message}" if message else ""
+        raise BrickLinkHTTPError(
+            f"BrickLink price guide batch returned HTTP {status}.{detail}",
+            status if status >= 400 else (code or status),
+        )
+    data = parsed.get("data") if isinstance(parsed, dict) else None
+    if not isinstance(data, list):
+        raise BrickLinkHTTPError("BrickLink price guide batch did not return a data list.", status)
+    guides = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        guide = guide_from_batch_entry(entry, guide_type, new_or_used, currency_code)
+        if guide["item_no"]:
+            guides.append(guide)
+    return guides
 
 
 def item_price_guide(

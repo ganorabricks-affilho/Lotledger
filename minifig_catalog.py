@@ -368,8 +368,8 @@ def buildable_figures(
         )
     matches.sort(
         key=lambda fig: (
-            fig["price_milli"] is None,
-            -(fig["price_milli"] or 0),
+            fig["profit_milli"] is None,
+            -(fig["profit_milli"] or 0),
             fig["name"].lower(),
             fig["fig_id"],
         )
@@ -379,7 +379,7 @@ def buildable_figures(
     buildable_total = len(buildable)
     best = max((fig["can_build"] for fig in matches), default=0)
     priced = [fig for fig in matches if fig["price_milli"] is not None]
-    top = priced[0] if priced else None
+    top = max(priced, key=lambda fig: fig["price_milli"]) if priced else None
     pages = max(1, (total + limit - 1) // limit) if total else 1
     page = min(max(1, page), pages)
     start = (page - 1) * limit

@@ -75,6 +75,7 @@
         <tr>
           <th class="ext-col"></th>
           <th>ID</th>
+          <th>Customer</th>
           <th>Src</th>
           <th>Date</th>
           <th>Status</th>
@@ -91,7 +92,7 @@
       <tbody>
         {% for group in month_groups %}
         <tr class="month-group">
-          <td colspan="6">{{ group.label }}<small>{{ group.orders|length }} order{{ 's' if group.orders|length != 1 else '' }}</small></td>
+          <td colspan="7">{{ group.label }}<small>{{ group.orders|length }} order{{ 's' if group.orders|length != 1 else '' }}</small></td>
           <td>{{ group.qty }}</td>
           <td>{{ group.lots }}</td>
           <td>{{ money(group.items_cents) }}</td>
@@ -110,6 +111,14 @@
             {% endif %}
           </td>
           <td><a href="{{ url_for('order_detail', order_id=order.id) }}">{{ order.order_number }}</a></td>
+          <td class="customer">
+            {% if order.customer_name or order.customer_address %}
+            {% if order.customer_name %}{{ order.customer_name }}{% endif %}
+            {% if order.customer_address %}<small>{{ order.customer_address }}</small>{% endif %}
+            {% else %}
+            —
+            {% endif %}
+          </td>
           <td>{{ 'BL' if order.is_bricklink else 'BO' }}</td>
           <td>{{ order.sold_on }}</td>
           <td>{{ order.status or '—' }}</td>

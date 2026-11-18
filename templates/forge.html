@@ -6,7 +6,7 @@
     <div>
       <p class="eyebrow">Minifig Forge</p>
       <h1>Buildable minifigures</h1>
-      <p class="lede">Each figure is checked on its own against the parts in Inventory. The number you can build is set by the scarcest part. One loose part can qualify more than one figure. New and used quantities are added together. The list runs from the highest BrickLink price: the average paid for a used figure over the last 6 months. Parts listed is your price for one figure, after any sale, using the lowest price when a part is listed more than once. That total against the figure price is the profit or loss of building it.</p>
+      <p class="lede">Each figure is checked on its own against the parts in Inventory. The number you can build is set by the scarcest part. One loose part can qualify more than one figure. New and used quantities are added together. The list runs from the highest profit. BrickLink price is the average paid for a used figure over the last 6 months. Parts listed is your price for one figure, after any sale, using the lowest price when a part is listed more than once. Profit is that figure price minus the parts.</p>
     </div>
   </div>
 
@@ -36,7 +36,8 @@
     </article>
   </div>
 
-  <form class="filters" method="get">
+  <div class="filters">
+  <form method="get">
     <label>Figure
       <input name="q" value="{{ filters.q }}" placeholder="Name or BrickLink id">
     </label>
@@ -45,9 +46,21 @@
     <a class="btn ghost" href="{{ url_for('forge') }}">Clear</a>
     {% endif %}
   </form>
+  <form method="post" action="{{ url_for('forge_refresh_prices') }}">
+    <input type="hidden" name="q" value="{{ filters.q }}">
+    <input type="hidden" name="page" value="{{ filters.page }}">
+    <button class="btn ghost" type="submit" {% if price_refresh_running %}disabled{% endif %}>Refresh prices</button>
+  </form>
+  </div>
 
-  {% if result.price_pending %}
+  {% if price_refresh_running %}
+  <p class="lede pager-note" id="forge-price-status">Refreshing BrickLink prices. This usually takes a few seconds. The page reloads when it finishes.</p>
+  {% elif result.price_pending %}
+    {% if has_affiliate_key %}
   <p class="lede pager-note">BrickLink prices are still loading for {{ '{:,}'.format(result.price_pending) }} figure{{ 's' if result.price_pending != 1 else '' }}. Reload to see them in order.</p>
+    {% else %}
+  <p class="lede pager-note">{{ '{:,}'.format(result.price_pending) }} figure{{ 's' if result.price_pending != 1 else '' }} still need a sold price. Add a BrickLink price-guide key in <a href="{{ url_for('settings') }}">Settings</a>.</p>
+    {% endif %}
   {% endif %}
   {% if rows %}
   <p class="lede pager-note">{{ '{:,}'.format(result.total) }} figure{{ 's' if result.total != 1 else '' }}{% if result.pages > 1 %} · page {{ result.page }} of {{ result.pages }}{% endif %}</p>
@@ -137,6 +150,22 @@
   <p class="empty">No minifigure in the catalog matches “{{ filters.q }}”.</p>
   {% else %}
   <p class="empty">No complete minifigure matches the parts on hand.</p>
+  {% endif %}
+  {% if price_refresh_running %}
+  <script>
+    const watchPrices = async () => {
+      try {
+        const res = await fetch({{ url_for('forge_price_status')|tojson }});
+        const data = await res.json();
+        if (!data.running) {
+          location.reload();
+          return;
+        }
+      } catch (err) {}
+      setTimeout(watchPrices, 2000);
+    };
+    setTimeout(watchPrices, 2000);
+  </script>
   {% endif %}
   {% endif %}
 </section>

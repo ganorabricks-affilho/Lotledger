@@ -2382,6 +2382,81 @@ def sales_profit_report(year: Optional[int] = None, month: Optional[int] = None,
     return report
 
 
+def _plain(value) -> str:
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    return " ".join(str(value).split())
+
+
+def customer_from_api(order: dict) -> dict:
+    """Shipping name and address stored on the order payload, when the store sent them."""
+    platform = (order.get("platform_key") or "").strip().lower()
+    raw = order.get("api_json") or ""
+    try:
+        payload = json.loads(raw) if str(raw).strip() else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    name = ""
+    address = ""
+    if platform == "bricklink":
+        detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+        listing = payload.get("list") if isinstance(payload.get("list"), dict) else {}
+        shipping = detail.get("shipping") if isinstance(detail.get("shipping"), dict) else {}
+        addr = shipping.get("address") if isinstance(shipping.get("address"), dict) else {}
+        person = addr.get("name") if isinstance(addr.get("name"), dict) else {}
+        name = _plain(person.get("full")) or " ".join(
+            part for part in (_plain(person.get("first")), _plain(person.get("last"))) if part
+        )
+        if not name:
+            name = _plain(detail.get("buyer_name")) or _plain(listing.get("buyer_name"))
+        locality = " ".join(
+            part for part in (_plain(addr.get("state")), _plain(addr.get("postal_code"))) if part
+        )
+        city_line = ", ".join(part for part in (_plain(addr.get("city")), locality) if part)
+        country = _plain(addr.get("country_code"))
+        if country in ("US", "USA"):
+            country = ""
+        address = ", ".join(
+            part
+            for part in (
+                _plain(addr.get("address1")),
+                _plain(addr.get("address2")),
+                city_line,
+                country,
+            )
+            if part
+        )
+    else:
+        view = payload.get("view") if isinstance(payload.get("view"), dict) else {}
+        name = " ".join(
+            part
+            for part in (_plain(view.get("ship_first_name")), _plain(view.get("ship_last_name")))
+            if part
+        ) or _plain(view.get("buyer_name"))
+        locality = " ".join(
+            part
+            for part in (_plain(view.get("ship_region")), _plain(view.get("ship_post_code")))
+            if part
+        )
+        city_line = ", ".join(part for part in (_plain(view.get("ship_city")), locality) if part)
+        country = _plain(view.get("ship_country_code")) or _plain(view.get("ship_country"))
+        if country in ("US", "USA", "United States"):
+            country = ""
+        address = ", ".join(
+            part
+            for part in (
+                _plain(view.get("ship_street_1")),
+                _plain(view.get("ship_street_2")),
+                city_line,
+                country,
+            )
+            if part
+        )
+    return {"customer_name": name, "customer_address": address}
+
+
 def _enrich_order(row) -> dict:
     order = dict(row)
     header_total = order.get("header_total_cents") or 0
@@ -2463,6 +2538,7 @@ def _enrich_order(row) -> dict:
             - brickowl_fee_cents
             - bricklink_fee_cents
         )
+    order.update(customer_from_api(order))
     return order
 
 
