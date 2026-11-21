@@ -26,6 +26,7 @@ SALE_FORMATS = [
 ]
 FORGE_GUIDE = {"guide_type": "sold", "new_or_used": "U", "currency_code": "USD"}
 FORGE_PRICE_DAYS = 7
+FORGE_BUILD_LIMIT = 80
 _price_refresh_lock = threading.Lock()
 _price_refresh_running = False
 
@@ -45,7 +46,7 @@ def _nav_section() -> str:
         "inventory_place",
     }:
         return "inventory"
-    if endpoint in {"forge", "forge_parts"}:
+    if endpoint in {"forge", "forge_parts", "forge_build", "forge_build_toggle"}:
         return "forge"
     if endpoint == "expenses":
         return "expenses"
@@ -70,6 +71,7 @@ def inject_helpers():
         "has_brickowl_key": bool(db.get_setting("brickowl_api_key")),
         "has_bricklink_creds": db.has_bricklink_creds(),
         "nav_section": _nav_section(),
+        "forge_build_count": len(_forge_build_ids()),
     }
 
 
@@ -1447,6 +1449,52 @@ def forge_price_status():
     return jsonify({"running": _price_refresh_running})
 
 
+def _forge_build_ids() -> list[str]:
+    raw = session.get("forge_build_ids") or []
+    if not isinstance(raw, list):
+        return []
+    seen = set()
+    ids = []
+    for item in raw:
+        fig_id = str(item or "").strip()
+        key = fig_id.lower()
+        if not fig_id or key in seen or len(fig_id) > 40:
+            continue
+        seen.add(key)
+        ids.append(fig_id)
+    return ids
+
+
+def _save_forge_build_ids(ids) -> list[str]:
+    seen = set()
+    clean = []
+    for item in ids:
+        fig_id = str(item or "").strip()
+        key = fig_id.lower()
+        if not fig_id or key in seen or len(fig_id) > 40:
+            continue
+        seen.add(key)
+        clean.append(fig_id)
+        if len(clean) >= FORGE_BUILD_LIMIT:
+            break
+    session["forge_build_ids"] = clean
+    session.modified = True
+    return clean
+
+
+def _forge_plan(fig_ids: list):
+    catalog = minifig_catalog.load()
+    owned = db.inventory_part_quantities()
+    prices = db.load_minifig_prices(**FORGE_GUIDE)
+    places = db.inventory_part_places()
+    listed = db.inventory_part_prices()
+    figures, missing = minifig_catalog.figures_for_ids(
+        catalog, fig_ids, owned, prices=prices, places=places, listed=listed
+    )
+    plan = minifig_catalog.plan_build(figures, owned, places)
+    return plan, missing
+
+
 @app.route("/forge")
 def forge():
     q = (request.args.get("q") or "").strip()
@@ -1479,6 +1527,7 @@ def forge():
         generated_at=generated.strftime("%b %-d, %Y") if generated else "",
         has_affiliate_key=bool((db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip()),
         price_refresh_running=_price_refresh_running,
+        build_ids=_forge_build_ids(),
     )
 
 
@@ -1515,6 +1564,47 @@ def forge_refresh_prices():
     else:
         flash("No buildable figures to price.")
     return redirect(url_for("forge", q=q, page=page))
+
+
+@app.route("/forge/build/toggle", methods=["POST"])
+def forge_build_toggle():
+    fig_id = (request.form.get("fig_id") or "").strip()
+    selected = _forge_build_ids()
+    turning_on = request.form.get("on") == "1"
+    if turning_on:
+        if fig_id and fig_id.lower() not in {item.lower() for item in selected}:
+            if len(selected) >= FORGE_BUILD_LIMIT:
+                return jsonify({"count": len(selected), "full": True})
+            selected.append(fig_id)
+    else:
+        selected = [item for item in selected if item.lower() != fig_id.lower()]
+    selected = _save_forge_build_ids(selected)
+    return jsonify({"count": len(selected), "full": False})
+
+
+@app.route("/forge/build", methods=["GET", "POST"])
+def forge_build():
+    if request.method == "POST":
+        action = (request.form.get("action") or "keep").strip()
+        if action == "clear":
+            _save_forge_build_ids([])
+        else:
+            _save_forge_build_ids(request.form.getlist("fig"))
+        return redirect(url_for("forge_build"))
+    fig_ids = _forge_build_ids()
+    if not fig_ids:
+        return render_template("forge_build.html", error=None, figures=None, missing=[], plan=None)
+    try:
+        plan, missing = _forge_plan(fig_ids)
+    except minifig_catalog.CatalogError as exc:
+        return render_template("forge_build.html", error=str(exc), figures=None, missing=[], plan=None)
+    return render_template(
+        "forge_build.html",
+        error=None,
+        figures=plan["kept"],
+        missing=missing,
+        plan=plan,
+    )
 
 
 @app.route("/forge/parts")
