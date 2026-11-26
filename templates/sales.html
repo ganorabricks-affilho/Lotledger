@@ -146,18 +146,6 @@
   </div>
 </section>
 <script>
-  function wireBusy(formId, btnId, statusId, busyLabel) {
-    const form = document.getElementById(formId);
-    if (!form) return;
-    const btn = document.getElementById(btnId);
-    const status = document.getElementById(statusId);
-    form.addEventListener("submit", () => {
-      btn.disabled = true;
-      btn.textContent = busyLabel;
-      status.hidden = false;
-      document.body.classList.add("is-busy");
-    });
-  }
   wireBusy("brickowl-import", "brickowl-import-btn", "brickowl-import-status", "Importing…");
   wireBusy("bricklink-import", "bricklink-import-btn", "bricklink-import-status", "Importing…");
   wireBusy("sales-match", "sales-match-btn", "sales-match-status", "Matching…");

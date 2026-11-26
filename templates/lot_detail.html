@@ -35,14 +35,14 @@
     <strong>{{ money(lot.profit_cents) }}</strong>
     <em>{{ lot.recovered }}% of total recovered</em>
   </article>
-  <article class="{% if lot.has_details %}{{ 'up' if lot.listed_value_cents >= lot.invested_cents else 'down' }}{% endif %}">
+  <article class="{% if lot.has_details %}{{ 'up' if lot.listed_value_milli >= lot.invested_cents * 10 else 'down' }}{% endif %}">
     <span>Parts value</span>
-    <strong>{{ money(lot.listed_value_cents or 0) }}</strong>
+    <strong>{{ money3(lot.listed_value_milli or 0) }}</strong>
     {% if lot.has_details %}
-      {% set lift = (lot.listed_value_cents or 0) - lot.invested_cents %}
-      <em>{% if lift >= 0 %}{{ money(lift) }} above{% else %}{{ money(-lift) }} below{% endif %} the {{ money(lot.invested_cents) }} purchase</em>
+      {% set lift = (lot.listed_value_milli or 0) - lot.invested_cents * 10 %}
+      <em>{% if lift >= 0 %}{{ money3(lift) }} above{% else %}{{ money3(-lift) }} below{% endif %} the {{ money(lot.invested_cents) }} purchase</em>
     {% else %}
-    <em>No parts uploaded yet</em>
+    <em>No listing rows yet</em>
     {% endif %}
   </article>
 </div>
@@ -55,7 +55,7 @@
   <div class="panel-head">
     <h2>Listing details{% if lot.details_locked %} · locked{% endif %}</h2>
     {% if lot.has_details %}
-    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} pcs · listed value {{ money(lot.listed_value_cents) }}{% if lot.sold_cost_cents %} · sold cost {{ money(lot.sold_cost_cents) }} · profit {{ money(lot.parts_profit_cents) }}{% endif %}</span>
+    <span>{{ lot.detail_count }} lots · {{ lot.listed_qty }} pcs · listed value {{ money3(lot.listed_value_milli) }}{% if lot.sold_cost_cents %} · sold cost {{ money(lot.sold_cost_cents) }} · profit {{ money(lot.parts_profit_cents) }}{% endif %}</span>
     {% endif %}
   </div>
   {% if lot.has_details or lot.details_locked %}
@@ -218,8 +218,8 @@
             {{ item.qty }}
             {% endif %}
           </td>
-          <td>{{ money(item.price_cents) }}</td>
-          <td>{{ money(item.qty * item.price_cents) }}</td>
+          <td>{{ money3(item.price_cents) }}</td>
+          <td>{{ money3(item.qty * item.price_cents) }}</td>
           <td>
             {{ money(item.part_cost_cents) }}
             {% if item.qty > 1 and item.match_state != 'partial' %}
@@ -270,7 +270,7 @@
       <tfoot>
         <tr>
           <td colspan="7">Lot totals</td>
-          <td>{{ money(lot.listed_value_cents) }}</td>
+          <td>{{ money3(lot.listed_value_milli) }}</td>
           <td>{{ money(lot.part_cost_cents) }}</td>
           <td class="{{ 'up' if lot.net_cents >= 0 else 'down' }}">{{ money(lot.net_cents) }}</td>
           <td class="{{ 'up' if lot.parts_profit_cents >= 0 else 'down' }}">{{ money(lot.parts_profit_cents) }}</td>

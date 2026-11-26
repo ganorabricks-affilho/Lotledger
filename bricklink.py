@@ -9,6 +9,10 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from money import cents_from_api as money_cents
+from money import dollars_to_milli
+from money import milli_from_api as money_milli
+
 BASE = "https://api.bricklink.com/api/store/v1"
 AFFILIATE_PRICE_URL = "https://api.bricklink.com/api/affiliate/v1/price_guide_batch"
 USER_AGENT = "Lotledger/0.1 (local BrickLink import)"
@@ -262,8 +266,8 @@ def price_guide_batch(
 ) -> list:
     """POST a batch of catalog items to the affiliate price-guide endpoint.
 
-    Returns one guide per item BrickLink answered, in the same shape as
-    item_price_guide plus item_no. At most 500 items per call.
+    Returns one guide per item BrickLink answered. Prices stay in thousandths
+    of a dollar. At most 500 items per call.
     """
     key = (api_key or "").strip()
     if not key:
@@ -349,58 +353,6 @@ def price_guide_batch(
     return guides
 
 
-def item_price_guide(
-    creds: dict,
-    item_no: str,
-    item_type: str = "MINIFIG",
-    guide_type: str = "sold",
-    new_or_used: str = "U",
-    currency_code: str = "USD",
-) -> dict:
-    """Last-6-months sold guide, or current stock, without the per-sale list."""
-    number = urllib.parse.quote(str(item_no or "").strip(), safe="")
-    if not number:
-        raise ValueError("A BrickLink item number is required.")
-    kind = urllib.parse.quote(str(item_type or "MINIFIG").strip(), safe="")
-    result = call(
-        creds,
-        f"items/{kind}/{number}/price",
-        {
-            "guide_type": guide_type,
-            "new_or_used": new_or_used,
-            "currency_code": currency_code,
-            "vat": "N",
-        },
-        timeout=30,
-    )
-    if result["status"] == 429:
-        raise BrickLinkThrottle("BrickLink is throttling price requests.")
-    data = _data(result)
-    if not isinstance(data, dict):
-        data = {}
-    sales = to_int(data.get("unit_quantity"))
-
-    def milli(key: str):
-        if sales <= 0:
-            return None
-        raw = data.get(key)
-        if raw is None or str(raw).strip() == "":
-            return None
-        return money_milli(raw)
-
-    return {
-        "guide_type": guide_type,
-        "new_or_used": new_or_used,
-        "currency_code": str(data.get("currency_code") or currency_code),
-        "qty_avg_price_milli": milli("qty_avg_price"),
-        "avg_price_milli": milli("avg_price"),
-        "min_price_milli": milli("min_price"),
-        "max_price_milli": milli("max_price"),
-        "unit_quantity": sales,
-        "total_quantity": to_int(data.get("total_quantity")),
-    }
-
-
 def list_categories(creds: dict) -> list:
     """BrickLink catalog categories: category_id, category_name, parent_id."""
     data = _data(call(creds, "categories", {}, timeout=30))
@@ -440,7 +392,7 @@ def inventories_for_date(creds: dict, created_on: str) -> list:
 
 
 def inventory_unit_prices(creds: dict) -> dict:
-    """Map BrickLink inventory_id -> effective unit price cents (after sale %)."""
+    """Map BrickLink inventory_id -> effective unit price in thousandths, after sale %."""
     prices = {}
     for raw in list_inventories(creds):
         bl_lot_id = str(raw.get("inventory_id") or "")
@@ -452,7 +404,7 @@ def inventory_unit_prices(creds: dict) -> dict:
             unit = unit * (100 - sale_rate) / 100.0
         item = raw.get("item") if isinstance(raw.get("item"), dict) else {}
         prices[bl_lot_id] = {
-            "price_cents": int(round(unit * 100)),
+            "price_cents": dollars_to_milli(unit),
             "sale_rate": max(0, sale_rate),
             "unit_price_raw": str(raw.get("unit_price") or ""),
             "item_id": str(item.get("no") or ""),
@@ -483,7 +435,7 @@ def normalize_inventory_item(raw: dict) -> dict:
         "color": color_name,
         "category": str(item.get("category_id") or item.get("categoryID") or ""),
         "qty": to_int(raw.get("quantity")),
-        "price_cents": int(round(unit * 100)),
+        "price_cents": dollars_to_milli(unit),
         "sale_rate": max(0, sale_rate),
         "condition": condition,
         "remarks": str(raw.get("remarks") or ""),
@@ -663,14 +615,6 @@ def collect_new_orders(creds: dict, limit: int, existing_numbers) -> list:
     return parsed
 
 
-def fetch_order_bundle(creds: dict, order_number: str, list_row: dict = None) -> dict:
-    """Fetch full order + items payloads for storage / backfill."""
-    detail = fetch_order(creds, order_number)
-    time.sleep(0.12)
-    items = fetch_order_items(creds, order_number)
-    return normalize_order(list_row or {}, items, detail)
-
-
 def normalize_order(raw: dict, items: list, detail: dict = None) -> dict:
     detail = detail or {}
     merged = {**raw, **detail}
@@ -783,26 +727,6 @@ def image_url(item_type, item_no: str, color_id: str = "") -> str:
     if kind == "PART" and color == "0":
         color = "1"  # white fallback when color unknown
     return f"https://img.bricklink.com/ItemImage/{folder}/{color}/{item_no}.png"
-
-
-def money_cents(value) -> int:
-    raw = str(value or "").replace("$", "").replace(",", "").strip()
-    if raw == "":
-        return 0
-    try:
-        return int(round(float(raw) * 100))
-    except ValueError:
-        return 0
-
-
-def money_milli(value) -> int:
-    raw = str(value or "").replace("$", "").replace(",", "").strip()
-    if raw == "":
-        return 0
-    try:
-        return int(round(float(raw) * 1000))
-    except ValueError:
-        return 0
 
 
 def to_int(value) -> int:

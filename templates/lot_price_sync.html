@@ -96,9 +96,9 @@
         <td>{{ row.bl_lot_id }}</td>
         <td>{{ row.item_id }}<small>{{ row.item_name }}</small></td>
         <td>{{ row.qty }}</td>
-        <td>{{ money(row.old_cents) }}</td>
-        <td>{{ money(row.new_cents) }}{% if row.bl_sale_rate %}<small>after {{ row.bl_sale_rate }}% sale</small>{% endif %}</td>
-        <td class="{{ 'up' if row.new_line_cents >= row.old_line_cents else 'down' }}">{{ money(row.new_line_cents - row.old_line_cents) }}</td>
+        <td>{{ money3(row.old_cents) }}</td>
+        <td>{{ money3(row.new_cents) }}{% if row.bl_sale_rate %}<small>after {{ row.bl_sale_rate }}% sale</small>{% endif %}</td>
+        <td class="{{ 'up' if row.new_line_cents >= row.old_line_cents else 'down' }}">{{ money3(row.new_line_cents - row.old_line_cents) }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -129,7 +129,7 @@
         <td>{{ row.bl_lot_id }}</td>
         <td>{{ row.item_id }}<small>{{ row.item_name }}</small></td>
         <td>{{ row.qty }}</td>
-        <td>{{ money(row.price_cents) }}</td>
+        <td>{{ money3(row.price_cents) }}</td>
       </tr>
       {% endfor %}
     </tbody>

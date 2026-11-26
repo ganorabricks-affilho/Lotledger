@@ -5,7 +5,7 @@
   <div>
     <p class="eyebrow">Lot-level profit</p>
     <h1>Are the used lots making money?</h1>
-    <p class="lede">Buy a used lot, import sales CSV, then match sold rows back. Unmatched rows stay out of lot P&amp;L.</p>
+    <p class="lede">Buy a used lot, import BrickLink and BrickOwl orders, then match sold rows back. Unmatched rows stay out of lot P&amp;L.</p>
   </div>
   <div class="hero-actions">
     <a class="btn" href="{{ url_for('lots') }}">Record a purchased lot</a>
@@ -85,7 +85,7 @@
   {% endif %}
 </section>
 
-{% if summary.unmatched %}
+{% if summary.unmatched_count %}
 <section class="panel">
   <div class="panel-head">
     <h2>Unmatched sold rows</h2>

@@ -888,11 +888,6 @@ main:has(.drawer-page) { max-width: 1360px; }
 .drawer.is-unavailable .drawer-x { display: flex; }
 .drawer.is-unavailable strong { visibility: hidden; }
 .drawer:hover { outline: 2px solid #1a1a1a; outline-offset: -2px; z-index: 1; }
-.tone-heads { background: #8fc47a; }
-.tone-torsos { background: #c45c8c; }
-.tone-legs { background: #e69138; }
-.tone-headgear { background: #3d85c6; }
-.tone-hair { background: #8e7cc3; }
 .tone-tbd { background: #fff; }
 .drawer-legend summary {
   display: flex;

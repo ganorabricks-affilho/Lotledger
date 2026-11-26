@@ -1,6 +1,5 @@
 import calendar
 import json
-import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -11,19 +10,21 @@ import bricklink
 import brickowl
 import brickstore
 import database as db
+import drawer_layout
 import minifig_catalog
+from paths import bundle_root
 
-app = Flask(__name__)
+_bundle = bundle_root()
+app = Flask(
+    __name__,
+    template_folder=str(_bundle / "templates"),
+    static_folder=str(_bundle / "static"),
+)
 app.secret_key = "lotledger-local-dev"
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 db.init_db()
 
 SOURCES = ["BrickLink", "BrickOwl", "eBay", "Goodwill", "Facebook Marketplace", "Other"]
-PLATFORMS = ["BrickLink", "BrickOwl", "eBay", "Other"]
-SALE_FORMATS = [
-    ("bricklink", "BrickLink"),
-    ("brickowl", "BrickOwl"),
-]
 FORGE_GUIDE = {"guide_type": "sold", "new_or_used": "U", "currency_code": "USD"}
 FORGE_PRICE_DAYS = 7
 FORGE_BUILD_LIMIT = 80
@@ -64,8 +65,6 @@ def inject_helpers():
         "money3": db.money3,
         "money_input": db.money_input,
         "sources": SOURCES,
-        "platforms": PLATFORMS,
-        "sale_formats": SALE_FORMATS,
         "item_types": brickstore.ITEM_TYPES,
         "conditions": brickstore.CONDITIONS,
         "has_brickowl_key": bool(db.get_setting("brickowl_api_key")),
@@ -177,9 +176,9 @@ def lot_details_manual(lot_id):
         sale_rate = max(0, int(request.form.get("sale_rate") or 0))
     except ValueError:
         sale_rate = 0
-    unit_cents = db.parse_money(request.form.get("price"))
+    unit_milli = db.parse_price(request.form.get("price"))
     if sale_rate > 0:
-        unit_cents = int(round(unit_cents * (100 - sale_rate) / 100.0))
+        unit_milli = int(round(unit_milli * (100 - sale_rate) / 100.0))
     item_type = (request.form.get("item_type") or "P").strip() or "P"
     if item_type not in brickstore.ITEM_TYPES:
         item_type = "P"
@@ -193,7 +192,7 @@ def lot_details_manual(lot_id):
         "color": (request.form.get("color") or "").strip(),
         "category": (request.form.get("category") or "").strip(),
         "qty": qty,
-        "price_cents": unit_cents,
+        "price_cents": unit_milli,
         "sale_rate": sale_rate,
         "condition": condition,
         "remarks": (request.form.get("remarks") or "").strip(),
@@ -406,17 +405,28 @@ def sales_refresh_status():
     return redirect(url_for("sales"))
 
 
+def _order_import_limit() -> int:
+    try:
+        limit = int(request.form.get("limit") or 10)
+    except ValueError:
+        limit = 10
+    return max(1, min(limit, 100))
+
+
+def _flash_order_import(platform: str, limit: int, result: dict) -> None:
+    flash(
+        f"Looked at the last {limit} {platform} orders. "
+        f"Imported {result['imported']} new ({result['lines']} lots). Duplicates skipped."
+    )
+
+
 @app.route("/sales/brickowl", methods=["POST"])
 def sales_brickowl_import():
     key = db.get_setting("brickowl_api_key")
     if not key:
         flash("Add your BrickOwl API key in Settings first.")
         return redirect(url_for("settings"))
-    try:
-        limit = int(request.form.get("limit") or 10)
-    except ValueError:
-        limit = 10
-    limit = max(1, min(limit, 100))
+    limit = _order_import_limit()
     try:
         existing = db.existing_order_numbers("brickowl")
         parsed = brickowl.collect_new_orders(key, limit, existing)
@@ -424,10 +434,7 @@ def sales_brickowl_import():
     except ValueError as exc:
         flash(str(exc))
         return redirect(url_for("sales"))
-    flash(
-        f"Looked at the last {limit} BrickOwl orders. "
-        f"Imported {result['imported']} new ({result['lines']} lots). Duplicates skipped."
-    )
+    _flash_order_import("BrickOwl", limit, result)
     return redirect(url_for("sales"))
 
 
@@ -438,11 +445,7 @@ def sales_bricklink_import():
     except ValueError as exc:
         flash(str(exc))
         return redirect(url_for("settings"))
-    try:
-        limit = int(request.form.get("limit") or 10)
-    except ValueError:
-        limit = 10
-    limit = max(1, min(limit, 100))
+    limit = _order_import_limit()
     try:
         existing = db.existing_order_numbers("bricklink")
         parsed = bricklink.collect_new_orders(creds, limit, existing)
@@ -450,10 +453,7 @@ def sales_bricklink_import():
     except ValueError as exc:
         flash(str(exc))
         return redirect(url_for("sales"))
-    flash(
-        f"Looked at the last {limit} BrickLink orders. "
-        f"Imported {result['imported']} new ({result['lines']} lots). Duplicates skipped."
-    )
+    _flash_order_import("BrickLink", limit, result)
     return redirect(url_for("sales"))
 
 
@@ -755,39 +755,13 @@ def inventory():
 # rows 01–08 then 09–16.
 # Lidl Parkside: two units, columns BA–BD. First is rows 01–08 plus a wide
 # BA-09. Second is rows 10–17 plus a wide BA-18.
-_DRAWER_COLUMNS = {
-    "left": [f"A{letter}" for letter in "ABCDEFGH"],
-    "right": [f"A{letter}" for letter in "IJKLMNOP"],
-}
-_DRAWER_BLOCKS = {
-    "left": (range(1, 8), range(8, 15)),
-    "right": (range(1, 9), range(9, 17)),
-}
-_PARKSIDE_COLUMNS = ["BA", "BB", "BC", "BD"]
-_PARKSIDE_UNITS = (
-    (range(1, 9), 9),
-    (range(10, 18), 18),
-)
 # Minifigure drawers: two towers, D17-01–D17-12 and D17-13–D17-24.
-_MINIFIG_TOWERS = (range(1, 13), range(13, 25))
-
-
-def _on_drawer_map(code: str) -> bool:
-    text = (code or "").strip().upper()
-    if re.fullmatch(r"D17-\d{2}", text):
-        return 1 <= int(text[4:]) <= 24
-    if len(text) != 5 or text[2] != "-" or not text[:2].isalpha() or not text[3:].isdigit():
-        return False
-    column, row = text[:2], int(text[3:])
-    if column in _DRAWER_COLUMNS["left"]:
-        return 1 <= row <= 14
-    if column in _DRAWER_COLUMNS["right"]:
-        return 1 <= row <= 16
-    if column in _PARKSIDE_COLUMNS:
-        if (1 <= row <= 8) or (10 <= row <= 17):
-            return True
-        return column == "BA" and row in (9, 18)
-    return False
+_DRAWER_COLUMNS = drawer_layout.DRAWER_COLUMNS
+_DRAWER_BLOCKS = drawer_layout.DRAWER_BLOCKS
+_PARKSIDE_COLUMNS = drawer_layout.PARKSIDE_COLUMNS
+_PARKSIDE_UNITS = drawer_layout.PARKSIDE_UNITS
+_MINIFIG_TOWERS = drawer_layout.MINIFIG_TOWERS
+_on_drawer_map = drawer_layout.on_drawer_map
 
 
 def _bl_category_names() -> dict:
