@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block title %}Build · Minifig Forge · Ganorabricks{% endblock %}
+{% block content %}
+<section class="inventory-page">
+  <div class="hero">
+    <div>
+      <p class="eyebrow">Minifig Forge</p>
+      <h1>Build</h1>
+      <p class="lede">One of each figure you checked. If they share a part you only have one of, the set that pays the most stays and the others come off. The pickup list then follows the remarks on those parts.</p>
+    </div>
+    <div class="hero-actions no-print">
+      <a class="btn ghost" href="{{ url_for('forge') }}">Back to figures</a>
+      {% if plan %}
+      <form method="post" action="{{ url_for('forge_build') }}">
+        <input type="hidden" name="action" value="clear">
+        <button class="btn ghost" type="submit">Clear</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if error %}
+  <p class="empty">{{ error }}</p>
+  {% elif not plan %}
+  <p class="empty">No figures yet. Check the ones you want on <a href="{{ url_for('forge') }}">Buildable</a>.</p>
+  {% else %}
+  {% if missing %}
+  <p class="lede pager-note">{{ missing|length }} selected id{{ 's are' if missing|length != 1 else ' is' }} not in the catalog: {{ missing|join(', ') }}.</p>
+  {% endif %}
+
+  {% if plan.fits %}
+  <div class="stats compact forge-stats">
+    <article>
+      <span>Figures</span>
+      <strong>{{ plan.kept|length }}</strong>
+      <em>one of each</em>
+    </article>
+    <article>
+      <span>Profit</span>
+      {% if plan.profit_known %}
+      <strong class="{{ 'up' if plan.profit_milli > 0 else 'down' if plan.profit_milli < 0 else '' }}">{{ money3(plan.profit_milli) }}</strong>
+      <em>sale price minus the parts</em>
+      {% elif plan.profit_milli is not none %}
+      <strong>{{ money3(plan.profit_milli) }}</strong>
+      <em>{{ plan.priced_count }} of {{ plan.kept|length }} have a sale price</em>
+      {% else %}
+      <strong>—</strong>
+      <em>no sale price yet</em>
+      {% endif %}
+    </article>
+    <article>
+      <span>Pickup</span>
+      <strong>{{ plan.stop_count }}</strong>
+      <em>{{ '{:,}'.format(plan.pieces) }} piece{{ 's' if plan.pieces != 1 else '' }}</em>
+    </article>
+  </div>
+  <p class="lede">You can build all of these. The parts below are enough for one of each.</p>
+  {% elif not plan.kept %}
+  <p class="lede">You can't build any of these from the parts on hand. Take them off, or list the missing parts first.</p>
+  {% else %}
+  <p class="lede">You picked {{ plan.kept|length + plan.blocked|length }} figures. They can't all be built, because some need a part the better set uses. Keep {{ plan.kept|length }}{% if plan.profit_known %}, profit {{ money3(plan.profit_milli) }}{% elif plan.profit_milli is not none %}, {{ money3(plan.profit_milli) }} from the {{ plan.priced_count }} with a sale price{% endif %}. Take the other {{ plan.blocked|length }} off.</p>
+  {% if plan.capped %}
+  <p class="lede pager-note">This many figures is too many to check every mix. This is the best set found, and a better mix is possible.</p>
+  {% endif %}
+  {% endif %}
+
+  <form method="post" action="{{ url_for('forge_build') }}" class="no-print">
+    <input type="hidden" name="action" value="keep">
+    {% if plan.kept %}
+    <h2>{% if plan.fits %}These figures{% else %}Build these{% endif %}</h2>
+    <ul class="forge-choices">
+      {% for fig in plan.kept %}
+      <li class="forge-choice">
+        <label>
+          <input type="checkbox" name="fig" value="{{ fig.fig_id }}" checked>
+          <img class="thumb" src="{{ fig.image_url }}" alt="" referrerpolicy="no-referrer">
+          <span>
+            <p><a href="{{ fig.catalog_url }}" target="_blank" rel="noreferrer">{{ fig.fig_id }}</a></p>
+            <p>{{ fig.name }}</p>
+            <p>
+              {% if fig.profit_milli is not none %}
+                {% if fig.profit_milli > 0 %}<span class="up">profit {{ money3(fig.profit_milli) }}</span>
+                {% elif fig.profit_milli < 0 %}<span class="down">loss {{ money3(-fig.profit_milli) }}</span>
+                {% else %}even{% endif %}
+              {% else %}
+              profit unknown
+              {% endif %}
+            </p>
+          </span>
+        </label>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if plan.blocked %}
+    <h2>Take these off</h2>
+    <ul class="forge-choices">
+      {% for fig in plan.blocked %}
+      <li class="forge-choice">
+        <label>
+          <input type="checkbox" name="fig" value="{{ fig.fig_id }}">
+          <img class="thumb" src="{{ fig.image_url }}" alt="" referrerpolicy="no-referrer">
+          <span>
+            <p><a href="{{ fig.catalog_url }}" target="_blank" rel="noreferrer">{{ fig.fig_id }}</a></p>
+            <p>{{ fig.name }}</p>
+            <p>
+              {% if fig.profit_milli is not none %}
+                {% if fig.profit_milli > 0 %}<span class="up">profit {{ money3(fig.profit_milli) }}</span>
+                {% elif fig.profit_milli < 0 %}<span class="down">loss {{ money3(-fig.profit_milli) }}</span>
+                {% else %}even{% endif %}
+              {% else %}
+              profit unknown
+              {% endif %}
+            </p>
+          </span>
+        </label>
+        <ul class="forge-conflicts">
+          {% for part in fig.conflicts %}
+          <li>
+            Needs {{ part.need }} × <a href="{{ url_for('inventory', q=part.item_no) }}">{{ part.item_no }}</a> {{ part.color_name }}.
+            You have {{ '{:,}'.format(part.have) }}{% if part.taken %}.
+            {% for other in part.by %}{{ other.fig_id }}{% if not loop.last %} and {% endif %}{% endfor %}
+            {{ 'uses' if part.by|length == 1 else 'use' }} {{ '{:,}'.format(part.taken) }}{% endif %}.
+          </li>
+          {% endfor %}
+          {% if not fig.conflicts %}
+          <li>The parts for this figure are already used by the set above.</li>
+          {% endif %}
+        </ul>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <div class="hero-actions">
+      {% if plan.fits %}
+      <button type="submit">Update the pickup list</button>
+      {% elif plan.kept %}
+      <button type="submit">Take these off and make the pickup list</button>
+      {% else %}
+      <button type="submit">Take these off</button>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if plan.fits and plan.stops %}
+  <h2>Pickup list</h2>
+  <p class="lede no-print">The large card is the part to take now. Click it when it is in your hand. It shrinks and gets a picked mark, and the next part opens up. Click a picked part to put just that one back.</p>
+  <p class="lede no-print" id="pick-left"></p>
+  <div class="pick-walk" id="pick-walk">
+    {% for stop in plan.stops %}
+    {% for part in stop.parts %}
+    <button type="button" class="pick-card" data-id="{{ stop.remark }}|{{ part.item_no }}|{{ part.color_name }}">
+      <span class="pick-side">{{ '{:,}'.format(part.qty) }}</span>
+      <span class="pick-photo">
+        {% if part.image_url %}
+        <img src="{{ part.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy">
+        {% endif %}
+      </span>
+      <span class="pick-copy">
+        <strong>{{ part.item_name or part.item_no }}</strong>
+        <span>{{ part.item_no }}</span>
+        <span>{{ part.color_name or 'No color' }}{% if part.short %} · short{% endif %}</span>
+        <span class="pick-for">For
+          {% for fig in part.figs %}
+          {{ fig.fig_id }}{% if fig.need != 1 %} × {{ fig.need }}{% endif %}{% if not loop.last %}, {% endif %}
+          {% endfor %}
+        </span>
+        <em class="pick-done">Picked</em>
+      </span>
+      <span class="pick-loc">
+        <small>Location</small>
+        <strong>{{ stop.label }}</strong>
+      </span>
+      <span class="pick-qtybox">
+        <small>Pick</small>
+        <strong>{{ '{:,}'.format(part.qty) }}</strong>
+      </span>
+    </button>
+    {% endfor %}
+    {% endfor %}
+  </div>
+  <p class="no-print"><button type="button" class="btn ghost" onclick="window.print()">Print pickup list</button></p>
+  <script>
+    const walk = document.getElementById("pick-walk");
+    const left = document.getElementById("pick-left");
+    const cards = [...walk.querySelectorAll(".pick-card")];
+    const storeKey = "forge-pick:" + cards.map((card) => card.dataset.id).join("\n");
+    let done = [];
+    try { done = JSON.parse(sessionStorage.getItem(storeKey) || "[]"); } catch (err) { done = []; }
+    const doneSet = new Set(done);
+    cards.forEach((card) => card.classList.toggle("is-done", doneSet.has(card.dataset.id)));
+
+    const save = () => {
+      sessionStorage.setItem(storeKey, JSON.stringify(cards.filter((card) => card.classList.contains("is-done")).map((card) => card.dataset.id)));
+    };
+    const show = (scroll) => {
+      const current = cards.find((card) => !card.classList.contains("is-done"));
+      cards.forEach((card) => card.classList.toggle("is-current", card === current));
+      const picked = cards.filter((card) => card.classList.contains("is-done")).length;
+      if (!current) {
+        left.textContent = "All " + cards.length + " parts are picked.";
+        return;
+      }
+      const after = cards.length - picked - 1;
+      left.textContent = picked + " picked · " + after + " after this one.";
+      if (scroll) current.scrollIntoView({ block: "center", behavior: "smooth" });
+    };
+    cards.forEach((card) => {
+      card.addEventListener("click", () => {
+        if (card.classList.contains("is-current")) {
+          card.classList.add("is-done");
+        } else if (card.classList.contains("is-done")) {
+          card.classList.remove("is-done");
+        }
+        save();
+        show(true);
+      });
+    });
+    show(false);
+  </script>
+  {% elif plan.fits %}
+  <p class="empty">These figures have no parts to pick up.</p>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

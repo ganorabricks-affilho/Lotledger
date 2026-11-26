@@ -6,6 +6,12 @@
   <div>
     <h1>{{ order.platform }} #{{ order.order_number }}</h1>
     <p class="lede">{{ order.sold_on }}{% if order.status %} · {{ order.status }}{% endif %}{% if order.payment_method %} · {{ order.payment_method }}{% endif %} · {{ order.display_qty }} quantity · {{ order.display_lots }} lots</p>
+    {% if order.customer_name or order.customer_address %}
+    <p class="customer-ship">
+      {% if order.customer_name %}<strong>{{ order.customer_name }}</strong>{% endif %}
+      {% if order.customer_address %}<span>{{ order.customer_address }}</span>{% endif %}
+    </p>
+    {% endif %}
   </div>
   <form method="post" action="{{ url_for('order_delete', order_id=order.id) }}" onsubmit="return confirm('Delete order {{ order.order_number }} and its line items? You can reimport it later.')">
     <button class="danger" type="submit">Delete order</button>
@@ -111,6 +117,8 @@
           <th>Cost</th>
           <th>Line total</th>
           <th>Net gain</th>
+          <th>Lot cost</th>
+          <th>Profit</th>
           <th>Lot</th>
           <th></th>
         </tr>
@@ -130,6 +138,8 @@
           <td>{{ money3(line.price_cents) }}</td>
           <td>{{ money3(line.qty * line.price_cents) }}</td>
           <td class="{{ 'up' if line.net_gain_cents >= 0 else 'down' }}">{{ money(line.net_gain_cents) }}</td>
+          <td>{% if line.part_cost_cents is not none %}{{ money(line.part_cost_cents) }}{% else %}—{% endif %}</td>
+          <td class="{% if line.part_profit_cents is not none %}{{ 'up' if line.part_profit_cents >= 0 else 'down' }}{% endif %}">{% if line.part_profit_cents is not none %}{{ money(line.part_profit_cents) }}{% else %}—{% endif %}</td>
           <td>
             {% if line.lot_id %}
             <a href="{{ url_for('lot_detail', lot_id=line.lot_id) }}">#{{ line.lot_id }}{% if line.lot_title %} · {{ line.lot_title }}{% endif %}</a>
@@ -157,6 +167,8 @@
           <td colspan="4">Totals</td>
           <td>{{ money3(order.lines_cents) }}</td>
           <td>{{ money(order.net_cents) }}</td>
+          <td>{% if order.has_part_cost %}{{ money(order.part_cost_cents) }}{% endif %}</td>
+          <td class="{% if order.has_part_cost %}{{ 'up' if order.parts_profit_cents >= 0 else 'down' }}{% endif %}">{% if order.has_part_cost %}{{ money(order.parts_profit_cents) }}{% endif %}</td>
           <td colspan="2"></td>
         </tr>
       </tfoot>

@@ -1,6 +1,5 @@
 import calendar
 import json
-import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -11,21 +10,24 @@ import bricklink
 import brickowl
 import brickstore
 import database as db
+import drawer_layout
 import minifig_catalog
+from paths import bundle_root
 
-app = Flask(__name__)
+_bundle = bundle_root()
+app = Flask(
+    __name__,
+    template_folder=str(_bundle / "templates"),
+    static_folder=str(_bundle / "static"),
+)
 app.secret_key = "lotledger-local-dev"
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 db.init_db()
 
 SOURCES = ["BrickLink", "BrickOwl", "eBay", "Goodwill", "Facebook Marketplace", "Other"]
-PLATFORMS = ["BrickLink", "BrickOwl", "eBay", "Other"]
-SALE_FORMATS = [
-    ("bricklink", "BrickLink"),
-    ("brickowl", "BrickOwl"),
-]
 FORGE_GUIDE = {"guide_type": "sold", "new_or_used": "U", "currency_code": "USD"}
 FORGE_PRICE_DAYS = 7
+FORGE_BUILD_LIMIT = 80
 _price_refresh_lock = threading.Lock()
 _price_refresh_running = False
 
@@ -45,7 +47,7 @@ def _nav_section() -> str:
         "inventory_place",
     }:
         return "inventory"
-    if endpoint in {"forge", "forge_parts"}:
+    if endpoint in {"forge", "forge_parts", "forge_build", "forge_build_toggle"}:
         return "forge"
     if endpoint == "expenses":
         return "expenses"
@@ -63,13 +65,12 @@ def inject_helpers():
         "money3": db.money3,
         "money_input": db.money_input,
         "sources": SOURCES,
-        "platforms": PLATFORMS,
-        "sale_formats": SALE_FORMATS,
         "item_types": brickstore.ITEM_TYPES,
         "conditions": brickstore.CONDITIONS,
         "has_brickowl_key": bool(db.get_setting("brickowl_api_key")),
         "has_bricklink_creds": db.has_bricklink_creds(),
         "nav_section": _nav_section(),
+        "forge_build_count": len(_forge_build_ids()),
     }
 
 
@@ -175,9 +176,9 @@ def lot_details_manual(lot_id):
         sale_rate = max(0, int(request.form.get("sale_rate") or 0))
     except ValueError:
         sale_rate = 0
-    unit_cents = db.parse_money(request.form.get("price"))
+    unit_milli = db.parse_price(request.form.get("price"))
     if sale_rate > 0:
-        unit_cents = int(round(unit_cents * (100 - sale_rate) / 100.0))
+        unit_milli = int(round(unit_milli * (100 - sale_rate) / 100.0))
     item_type = (request.form.get("item_type") or "P").strip() or "P"
     if item_type not in brickstore.ITEM_TYPES:
         item_type = "P"
@@ -191,7 +192,7 @@ def lot_details_manual(lot_id):
         "color": (request.form.get("color") or "").strip(),
         "category": (request.form.get("category") or "").strip(),
         "qty": qty,
-        "price_cents": unit_cents,
+        "price_cents": unit_milli,
         "sale_rate": sale_rate,
         "condition": condition,
         "remarks": (request.form.get("remarks") or "").strip(),
@@ -404,17 +405,28 @@ def sales_refresh_status():
     return redirect(url_for("sales"))
 
 
+def _order_import_limit() -> int:
+    try:
+        limit = int(request.form.get("limit") or 10)
+    except ValueError:
+        limit = 10
+    return max(1, min(limit, 100))
+
+
+def _flash_order_import(platform: str, limit: int, result: dict) -> None:
+    flash(
+        f"Looked at the last {limit} {platform} orders. "
+        f"Imported {result['imported']} new ({result['lines']} lots). Duplicates skipped."
+    )
+
+
 @app.route("/sales/brickowl", methods=["POST"])
 def sales_brickowl_import():
     key = db.get_setting("brickowl_api_key")
     if not key:
         flash("Add your BrickOwl API key in Settings first.")
         return redirect(url_for("settings"))
-    try:
-        limit = int(request.form.get("limit") or 10)
-    except ValueError:
-        limit = 10
-    limit = max(1, min(limit, 100))
+    limit = _order_import_limit()
     try:
         existing = db.existing_order_numbers("brickowl")
         parsed = brickowl.collect_new_orders(key, limit, existing)
@@ -422,10 +434,7 @@ def sales_brickowl_import():
     except ValueError as exc:
         flash(str(exc))
         return redirect(url_for("sales"))
-    flash(
-        f"Looked at the last {limit} BrickOwl orders. "
-        f"Imported {result['imported']} new ({result['lines']} lots). Duplicates skipped."
-    )
+    _flash_order_import("BrickOwl", limit, result)
     return redirect(url_for("sales"))
 
 
@@ -436,11 +445,7 @@ def sales_bricklink_import():
     except ValueError as exc:
         flash(str(exc))
         return redirect(url_for("settings"))
-    try:
-        limit = int(request.form.get("limit") or 10)
-    except ValueError:
-        limit = 10
-    limit = max(1, min(limit, 100))
+    limit = _order_import_limit()
     try:
         existing = db.existing_order_numbers("bricklink")
         parsed = bricklink.collect_new_orders(creds, limit, existing)
@@ -448,10 +453,7 @@ def sales_bricklink_import():
     except ValueError as exc:
         flash(str(exc))
         return redirect(url_for("sales"))
-    flash(
-        f"Looked at the last {limit} BrickLink orders. "
-        f"Imported {result['imported']} new ({result['lines']} lots). Duplicates skipped."
-    )
+    _flash_order_import("BrickLink", limit, result)
     return redirect(url_for("sales"))
 
 
@@ -461,6 +463,18 @@ def order_detail(order_id):
     if order is None:
         flash("Order not found.")
         return redirect(url_for("sales"))
+    db.attach_part_costs(order["lines"])
+    order["part_cost_cents"] = sum(
+        int(line["part_cost_cents"])
+        for line in order["lines"]
+        if line.get("part_cost_cents") is not None
+    )
+    order["parts_profit_cents"] = sum(
+        int(line["part_profit_cents"])
+        for line in order["lines"]
+        if line.get("part_profit_cents") is not None
+    )
+    order["has_part_cost"] = any(line.get("part_cost_cents") is not None for line in order["lines"])
     return render_template("order_detail.html", order=order)
 
 
@@ -512,6 +526,16 @@ def settings():
             for key in bricklink.CRED_KEYS:
                 db.set_setting(key, "")
             flash("BrickLink credentials removed.")
+        elif action == "clear_bricklink_affiliate":
+            db.set_setting(bricklink.AFFILIATE_KEY_SETTING, "")
+            flash("BrickLink price-guide key removed.")
+        elif action == "save_bricklink_affiliate":
+            key = request.form.get("bricklink_affiliate_key", "").strip()
+            if not key:
+                flash("Paste a BrickLink price-guide key, or use Remove key.")
+            else:
+                db.set_setting(bricklink.AFFILIATE_KEY_SETTING, key)
+                flash("BrickLink price-guide key saved.")
         elif action == "save_bricklink":
             fields = {
                 "bricklink_consumer_key": request.form.get("bricklink_consumer_key", "").strip(),
@@ -534,12 +558,15 @@ def settings():
         return redirect(url_for("settings"))
     key = db.get_setting("brickowl_api_key")
     token = db.get_setting("bricklink_token")
+    affiliate = (db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip()
     return render_template(
         "settings.html",
         has_brickowl_key=bool(key),
         key_hint=f"…{key[-4:]}" if len(key) >= 4 else "",
         has_bricklink_creds=db.has_bricklink_creds(),
         bricklink_hint=f"…{token[-4:]}" if len(token) >= 4 else "",
+        has_affiliate_key=bool(affiliate),
+        affiliate_hint=f"…{affiliate[-4:]}" if len(affiliate) >= 4 else "",
     )
 
 
@@ -728,39 +755,13 @@ def inventory():
 # rows 01–08 then 09–16.
 # Lidl Parkside: two units, columns BA–BD. First is rows 01–08 plus a wide
 # BA-09. Second is rows 10–17 plus a wide BA-18.
-_DRAWER_COLUMNS = {
-    "left": [f"A{letter}" for letter in "ABCDEFGH"],
-    "right": [f"A{letter}" for letter in "IJKLMNOP"],
-}
-_DRAWER_BLOCKS = {
-    "left": (range(1, 8), range(8, 15)),
-    "right": (range(1, 9), range(9, 17)),
-}
-_PARKSIDE_COLUMNS = ["BA", "BB", "BC", "BD"]
-_PARKSIDE_UNITS = (
-    (range(1, 9), 9),
-    (range(10, 18), 18),
-)
 # Minifigure drawers: two towers, D17-01–D17-12 and D17-13–D17-24.
-_MINIFIG_TOWERS = (range(1, 13), range(13, 25))
-
-
-def _on_drawer_map(code: str) -> bool:
-    text = (code or "").strip().upper()
-    if re.fullmatch(r"D17-\d{2}", text):
-        return 1 <= int(text[4:]) <= 24
-    if len(text) != 5 or text[2] != "-" or not text[:2].isalpha() or not text[3:].isdigit():
-        return False
-    column, row = text[:2], int(text[3:])
-    if column in _DRAWER_COLUMNS["left"]:
-        return 1 <= row <= 14
-    if column in _DRAWER_COLUMNS["right"]:
-        return 1 <= row <= 16
-    if column in _PARKSIDE_COLUMNS:
-        if (1 <= row <= 8) or (10 <= row <= 17):
-            return True
-        return column == "BA" and row in (9, 18)
-    return False
+_DRAWER_COLUMNS = drawer_layout.DRAWER_COLUMNS
+_DRAWER_BLOCKS = drawer_layout.DRAWER_BLOCKS
+_PARKSIDE_COLUMNS = drawer_layout.PARKSIDE_COLUMNS
+_PARKSIDE_UNITS = drawer_layout.PARKSIDE_UNITS
+_MINIFIG_TOWERS = drawer_layout.MINIFIG_TOWERS
+_on_drawer_map = drawer_layout.on_drawer_map
 
 
 def _bl_category_names() -> dict:
@@ -1311,75 +1312,102 @@ def _forge_prices_due(fig_ids, prices: dict) -> list:
     return due
 
 
+def _save_forge_guide(fig_id: str, guide: dict) -> None:
+    db.save_minifig_price(
+        {
+            "fig_id": fig_id,
+            "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            **guide,
+        }
+    )
+
+
+def _fetch_forge_price_batch(api_key: str, fig_ids: list) -> list:
+    """Fetch one batch, splitting it when a single bad id would fail the whole call."""
+    delay = 1.0
+    for attempt in range(5):
+        try:
+            return bricklink.price_guide_batch(
+                api_key,
+                fig_ids,
+                item_type="MINIFIG",
+                color_id=0,
+                **FORGE_GUIDE,
+            )
+        except bricklink.BrickLinkThrottle:
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+        except bricklink.BrickLinkHTTPError as exc:
+            if exc.status in (401, 403):
+                raise
+            # A bad catalog id fails the whole batch. Split until that id is alone.
+            if exc.status == 400 and len(fig_ids) > 1:
+                mid = max(1, len(fig_ids) // 2)
+                return _fetch_forge_price_batch(api_key, fig_ids[:mid]) + _fetch_forge_price_batch(
+                    api_key, fig_ids[mid:]
+                )
+            if attempt == 4 or exc.status == 400:
+                label = fig_ids[0] if len(fig_ids) == 1 else f"{len(fig_ids)} figures"
+                print(f"forge price skipped {label}: {exc}", flush=True)
+                return []
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+    print(f"forge prices gave up on {len(fig_ids)} figures after throttling", flush=True)
+    return []
+
+
 def refresh_forge_prices(fig_ids, force: bool = False) -> int:
-    """Fill the local price cache from BrickLink. Returns how many guides were fetched."""
+    """Fill the local price cache from the affiliate price-guide batch. Returns rows saved."""
     wanted = list(dict.fromkeys(fig_ids))
     prices = db.load_minifig_prices(**FORGE_GUIDE)
     due = wanted if force else _forge_prices_due(wanted, prices)
     if not due:
         return 0
-    creds = bricklink.creds_from_settings(db.get_setting)
+    api_key = (db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip()
+    if not api_key:
+        raise ValueError("Add a BrickLink affiliate API key in Settings first.")
     print(f"forge prices fetching {len(due)}", flush=True)
     fresh_after = datetime.now(timezone.utc) - timedelta(days=FORGE_PRICE_DAYS)
     fetched = 0
-    for index, fig_id in enumerate(due, 1):
-        if not force:
-            stamp = _price_fetched_at(db.minifig_price_fetched_at(fig_id, **FORGE_GUIDE))
-            if stamp is not None and stamp >= fresh_after:
-                continue
-        delay = 1.0
-        guide = None
-        for attempt in range(5):
-            try:
-                guide = bricklink.item_price_guide(creds, fig_id, item_type="MINIFIG", **FORGE_GUIDE)
-                break
-            except bricklink.BrickLinkThrottle:
-                time.sleep(delay)
-                delay = min(delay * 2, 30)
-            except ValueError as exc:
-                text = str(exc)
-                if any(code in text for code in ("HTTP 400", "HTTP 403", "HTTP 404")):
-                    print(f"forge price skipped {fig_id}: {text}", flush=True)
-                    guide = None
-                    break
-                if attempt == 4:
-                    print(f"forge price skipped {fig_id}: {text}", flush=True)
-                    guide = None
-                    break
-                time.sleep(delay)
-                delay = min(delay * 2, 30)
-        if guide is None:
-            time.sleep(0.2)
+    step = bricklink.PRICE_GUIDE_BATCH_LIMIT
+    for start in range(0, len(due), step):
+        chunk = []
+        for fig_id in due[start : start + step]:
+            if not force:
+                stamp = _price_fetched_at(db.minifig_price_fetched_at(fig_id, **FORGE_GUIDE))
+                if stamp is not None and stamp >= fresh_after:
+                    continue
+            chunk.append(fig_id)
+        if not chunk:
             continue
-        db.save_minifig_price(
-            {
-                "fig_id": fig_id,
-                "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                **guide,
-            }
-        )
-        fetched += 1
-        if index % 25 == 0 or index == len(due):
-            price = guide.get("qty_avg_price_milli")
-            shown = f"${price / 1000:.2f}" if price is not None else "no sales"
-            print(f"forge prices {index}/{len(due)} {fig_id} {shown}", flush=True)
-        time.sleep(0.2)
+        guides = _fetch_forge_price_batch(api_key, chunk)
+        by_id = {guide["item_no"]: guide for guide in guides}
+        for fig_id in chunk:
+            guide = by_id.get(fig_id)
+            if guide is None:
+                continue
+            _save_forge_guide(fig_id, guide)
+            fetched += 1
+        print(f"forge prices {min(start + step, len(due))}/{len(due)} saved {fetched}", flush=True)
     return fetched
 
 
-def _start_forge_price_refresh(fig_ids) -> None:
+def _start_forge_price_refresh(fig_ids, force: bool = False) -> str:
+    """Start a background price fetch. Returns started, busy, nokey, or empty."""
     global _price_refresh_running
-    if not fig_ids or not db.has_bricklink_creds():
-        return
+    if not fig_ids:
+        return "empty"
+    if not (db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip():
+        return "nokey"
     with _price_refresh_lock:
         if _price_refresh_running:
-            return
+            return "busy"
         _price_refresh_running = True
 
     def work():
         global _price_refresh_running
         try:
-            refresh_forge_prices(fig_ids)
+            refresh_forge_prices(fig_ids, force=force)
         except Exception as exc:
             print(f"forge price refresh failed: {exc}", flush=True)
         finally:
@@ -1387,6 +1415,58 @@ def _start_forge_price_refresh(fig_ids) -> None:
                 _price_refresh_running = False
 
     threading.Thread(target=work, daemon=True).start()
+    return "started"
+
+
+@app.route("/forge/prices/status")
+def forge_price_status():
+    return jsonify({"running": _price_refresh_running})
+
+
+def _forge_build_ids() -> list[str]:
+    raw = session.get("forge_build_ids") or []
+    if not isinstance(raw, list):
+        return []
+    seen = set()
+    ids = []
+    for item in raw:
+        fig_id = str(item or "").strip()
+        key = fig_id.lower()
+        if not fig_id or key in seen or len(fig_id) > 40:
+            continue
+        seen.add(key)
+        ids.append(fig_id)
+    return ids
+
+
+def _save_forge_build_ids(ids) -> list[str]:
+    seen = set()
+    clean = []
+    for item in ids:
+        fig_id = str(item or "").strip()
+        key = fig_id.lower()
+        if not fig_id or key in seen or len(fig_id) > 40:
+            continue
+        seen.add(key)
+        clean.append(fig_id)
+        if len(clean) >= FORGE_BUILD_LIMIT:
+            break
+    session["forge_build_ids"] = clean
+    session.modified = True
+    return clean
+
+
+def _forge_plan(fig_ids: list):
+    catalog = minifig_catalog.load()
+    owned = db.inventory_part_quantities()
+    prices = db.load_minifig_prices(**FORGE_GUIDE)
+    places = db.inventory_part_places()
+    listed = db.inventory_part_prices()
+    figures, missing = minifig_catalog.figures_for_ids(
+        catalog, fig_ids, owned, prices=prices, places=places, listed=listed
+    )
+    plan = minifig_catalog.plan_build(figures, owned, places)
+    return plan, missing
 
 
 @app.route("/forge")
@@ -1419,6 +1499,85 @@ def forge():
         result=result,
         filters={"q": q, "page": result["page"]},
         generated_at=generated.strftime("%b %-d, %Y") if generated else "",
+        has_affiliate_key=bool((db.get_setting(bricklink.AFFILIATE_KEY_SETTING) or "").strip()),
+        price_refresh_running=_price_refresh_running,
+        build_ids=_forge_build_ids(),
+    )
+
+
+@app.route("/forge/prices", methods=["POST"])
+def forge_refresh_prices():
+    q = (request.form.get("q") or "").strip()
+    try:
+        page = max(1, int(request.form.get("page") or 1))
+    except ValueError:
+        page = 1
+    try:
+        catalog = minifig_catalog.load()
+        result = minifig_catalog.buildable_figures(
+            catalog,
+            db.inventory_part_quantities(),
+            q=q,
+            page=page,
+            prices=db.load_minifig_prices(**FORGE_GUIDE),
+        )
+    except minifig_catalog.CatalogError as exc:
+        flash(str(exc))
+        return redirect(url_for("forge", q=q, page=page))
+    status = _start_forge_price_refresh(result["buildable_ids"], force=True)
+    count = len(result["buildable_ids"])
+    if status == "started":
+        flash(
+            f"Refreshing prices for {count} figure{'s' if count != 1 else ''}. "
+            "The page reloads when the new averages are in."
+        )
+    elif status == "busy":
+        flash("A price refresh is already running. Reload in a moment.")
+    elif status == "nokey":
+        flash("Add a BrickLink price-guide key in Settings first.")
+    else:
+        flash("No buildable figures to price.")
+    return redirect(url_for("forge", q=q, page=page))
+
+
+@app.route("/forge/build/toggle", methods=["POST"])
+def forge_build_toggle():
+    fig_id = (request.form.get("fig_id") or "").strip()
+    selected = _forge_build_ids()
+    turning_on = request.form.get("on") == "1"
+    if turning_on:
+        if fig_id and fig_id.lower() not in {item.lower() for item in selected}:
+            if len(selected) >= FORGE_BUILD_LIMIT:
+                return jsonify({"count": len(selected), "full": True})
+            selected.append(fig_id)
+    else:
+        selected = [item for item in selected if item.lower() != fig_id.lower()]
+    selected = _save_forge_build_ids(selected)
+    return jsonify({"count": len(selected), "full": False})
+
+
+@app.route("/forge/build", methods=["GET", "POST"])
+def forge_build():
+    if request.method == "POST":
+        action = (request.form.get("action") or "keep").strip()
+        if action == "clear":
+            _save_forge_build_ids([])
+        else:
+            _save_forge_build_ids(request.form.getlist("fig"))
+        return redirect(url_for("forge_build"))
+    fig_ids = _forge_build_ids()
+    if not fig_ids:
+        return render_template("forge_build.html", error=None, figures=None, missing=[], plan=None)
+    try:
+        plan, missing = _forge_plan(fig_ids)
+    except minifig_catalog.CatalogError as exc:
+        return render_template("forge_build.html", error=str(exc), figures=None, missing=[], plan=None)
+    return render_template(
+        "forge_build.html",
+        error=None,
+        figures=plan["kept"],
+        missing=missing,
+        plan=plan,
     )
 
 

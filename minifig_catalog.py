@@ -295,6 +295,59 @@ def _listed_cost(lots: list, need: int):
     return cost, unit
 
 
+def _figure_row(fig: dict, owned: dict, prices: dict | None, places: dict | None, listed: dict | None) -> dict:
+    can_build = None
+    parts = []
+    for part in fig["parts"]:
+        have = int(owned.get(owned_key(part["item_no"], part["color_id"]), 0))
+        need = int(part["need"])
+        possible = have // need if need else 0
+        if can_build is None or possible < can_build:
+            can_build = possible
+        parts.append(
+            {
+                **part,
+                "have": have,
+                "possible": possible,
+                "places": list((places or {}).get(owned_key(part["item_no"], part["color_id"]), [])),
+            }
+        )
+    can_build = can_build or 0
+    parts_milli = 0
+    parts_priced = True
+    for part in parts:
+        part["is_limit"] = part["possible"] == can_build
+        cost, unit = _listed_cost(
+            (listed or {}).get(owned_key(part["item_no"], part["color_id"])),
+            part["need"],
+        )
+        part["list_milli"] = cost
+        part["list_unit_milli"] = unit
+        if cost is None:
+            parts_priced = False
+        else:
+            parts_milli += cost
+    info = (prices or {}).get(fig["fig_id"])
+    price_milli = info["price_milli"] if info else None
+    profit_milli = None
+    if parts_priced and price_milli is not None:
+        profit_milli = price_milli - parts_milli
+    return {
+        "fig_id": fig["fig_id"],
+        "name": fig["name"],
+        "can_build": can_build,
+        "image_url": f"https://img.bricklink.com/ItemImage/MN/0/{fig['fig_id']}.png",
+        "catalog_url": bricklink.catalog_url("MINIFIG", fig["fig_id"]),
+        "parts": parts,
+        "price_milli": price_milli,
+        "sales": info["unit_quantity"] if info else 0,
+        "price_fetched_at": info["fetched_at"] if info else "",
+        "price_known": info is not None,
+        "parts_milli": parts_milli if parts_priced else None,
+        "profit_milli": profit_milli,
+    }
+
+
 def buildable_figures(
     catalog: dict,
     owned: dict[tuple[str, str], int],
@@ -312,64 +365,14 @@ def buildable_figures(
             continue
         if query and query not in fig["fig_id"].lower() and query not in fig["name"].lower():
             continue
-        can_build = None
-        parts = []
-        for part in fig["parts"]:
-            have = int(owned.get(owned_key(part["item_no"], part["color_id"]), 0))
-            need = int(part["need"])
-            possible = have // need if need else 0
-            if can_build is None or possible < can_build:
-                can_build = possible
-            parts.append(
-                {
-                    **part,
-                    "have": have,
-                    "possible": possible,
-                    "places": list((places or {}).get(owned_key(part["item_no"], part["color_id"]), [])),
-                }
-            )
-        can_build = can_build or 0
-        if not query and can_build < 1:
+        row = _figure_row(fig, owned, prices, places, listed)
+        if not query and row["can_build"] < 1:
             continue
-        parts_milli = 0
-        parts_priced = True
-        for part in parts:
-            part["is_limit"] = part["possible"] == can_build
-            cost, unit = _listed_cost(
-                (listed or {}).get(owned_key(part["item_no"], part["color_id"])),
-                part["need"],
-            )
-            part["list_milli"] = cost
-            part["list_unit_milli"] = unit
-            if cost is None:
-                parts_priced = False
-            else:
-                parts_milli += cost
-        info = (prices or {}).get(fig["fig_id"])
-        price_milli = info["price_milli"] if info else None
-        profit_milli = None
-        if parts_priced and price_milli is not None:
-            profit_milli = price_milli - parts_milli
-        matches.append(
-            {
-                "fig_id": fig["fig_id"],
-                "name": fig["name"],
-                "can_build": can_build,
-                "image_url": f"https://img.bricklink.com/ItemImage/MN/0/{fig['fig_id']}.png",
-                "catalog_url": bricklink.catalog_url("MINIFIG", fig["fig_id"]),
-                "parts": parts,
-                "price_milli": price_milli,
-                "sales": info["unit_quantity"] if info else 0,
-                "price_fetched_at": info["fetched_at"] if info else "",
-                "price_known": info is not None,
-                "parts_milli": parts_milli if parts_priced else None,
-                "profit_milli": profit_milli,
-            }
-        )
+        matches.append(row)
     matches.sort(
         key=lambda fig: (
-            fig["price_milli"] is None,
-            -(fig["price_milli"] or 0),
+            fig["profit_milli"] is None,
+            -(fig["profit_milli"] or 0),
             fig["name"].lower(),
             fig["fig_id"],
         )
@@ -379,7 +382,7 @@ def buildable_figures(
     buildable_total = len(buildable)
     best = max((fig["can_build"] for fig in matches), default=0)
     priced = [fig for fig in matches if fig["price_milli"] is not None]
-    top = priced[0] if priced else None
+    top = max(priced, key=lambda fig: fig["price_milli"]) if priced else None
     pages = max(1, (total + limit - 1) // limit) if total else 1
     page = min(max(1, page), pages)
     start = (page - 1) * limit
@@ -395,4 +398,351 @@ def buildable_figures(
         "page": page,
         "pages": pages,
         "fig_count": catalog["fig_count"],
+    }
+
+
+def figures_for_ids(
+    catalog: dict,
+    fig_ids: list,
+    owned: dict,
+    prices: dict | None = None,
+    places: dict | None = None,
+    listed: dict | None = None,
+) -> tuple[list, list]:
+    """Return selected figures in the requested order, plus ids the catalog does not have."""
+    by_id = {fig["fig_id"].lower(): fig for fig in catalog["figs"]}
+    rows = []
+    missing = []
+    seen = set()
+    for raw in fig_ids:
+        fig_id = str(raw or "").strip()
+        key = fig_id.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if key in SKIP_FIG_IDS:
+            missing.append(fig_id)
+            continue
+        fig = by_id.get(key)
+        if fig is None:
+            missing.append(fig_id)
+            continue
+        rows.append(_figure_row(fig, owned, prices, places, listed))
+    return rows, missing
+
+
+def _worth(fig: dict) -> int:
+    value = fig.get("profit_milli")
+    if value is None:
+        return 0
+    return int(value)
+
+
+def _part_needs(fig: dict) -> list[tuple[tuple[str, str], int]]:
+    needs = []
+    for part in fig["parts"]:
+        need = int(part.get("need") or 0)
+        if need <= 0:
+            continue
+        needs.append((owned_key(part["item_no"], part["color_id"]), need))
+    return needs
+
+
+def _can_take(needs, used: dict, owned: dict) -> bool:
+    for key, need in needs:
+        if int(used.get(key, 0)) + need > int(owned.get(key, 0)):
+            return False
+    return True
+
+
+def _take(needs, used: dict, sign: int) -> None:
+    for key, need in needs:
+        used[key] = int(used.get(key, 0)) + sign * need
+        if not used[key]:
+            del used[key]
+
+
+def _search(figures: list, owned: dict, prefer: str) -> dict:
+    """Best subset of one build each.
+
+    prefer "profit" keeps the most profit, then the most figures.
+    prefer "count" keeps the most figures, then the most profit.
+    """
+    prepared = [(fig, _part_needs(fig), _worth(fig)) for fig in figures]
+    prepared.sort(key=lambda item: (-item[2], item[0]["name"].lower(), item[0]["fig_id"]))
+    best = {"profit": 0, "count": 0, "ids": [], "capped": False}
+    if not prepared:
+        return best
+    n = len(prepared)
+    suffix_profit = [0] * (n + 1)
+    suffix_count = [0] * (n + 1)
+    for index in range(n - 1, -1, -1):
+        suffix_count[index] = suffix_count[index + 1] + 1
+        suffix_profit[index] = suffix_profit[index + 1] + max(0, prepared[index][2])
+
+    def rank(profit: int, count: int) -> tuple:
+        if prefer == "count":
+            return (count, profit)
+        return (profit, count)
+
+    used: dict = {}
+    greedy_ids = []
+    greedy_profit = 0
+    for fig, needs, worth in prepared:
+        if prefer == "profit" and worth < 0:
+            continue
+        if not _can_take(needs, used, owned):
+            continue
+        _take(needs, used, 1)
+        greedy_ids.append(fig["fig_id"])
+        greedy_profit += worth
+    if rank(greedy_profit, len(greedy_ids)) > rank(0, 0):
+        best = {"profit": greedy_profit, "count": len(greedy_ids), "ids": greedy_ids, "capped": False}
+
+    chosen: list[str] = []
+    used = {}
+    nodes = {"n": 0}
+    cap = 250000
+
+    def hopeless(index: int, profit: int, count: int) -> bool:
+        if prefer == "count":
+            reach = count + suffix_count[index]
+            if reach < best["count"]:
+                return True
+            return reach == best["count"] and profit + suffix_profit[index] <= best["profit"]
+        reach = profit + suffix_profit[index]
+        if reach < best["profit"]:
+            return True
+        return reach == best["profit"] and count + suffix_count[index] <= best["count"]
+
+    def dfs(index: int, profit: int, count: int) -> None:
+        nodes["n"] += 1
+        if nodes["n"] > cap or hopeless(index, profit, count):
+            return
+        if index == n:
+            if rank(profit, count) > rank(best["profit"], best["count"]):
+                best["profit"] = profit
+                best["count"] = count
+                best["ids"] = list(chosen)
+            return
+        fig, needs, worth = prepared[index]
+        if _can_take(needs, used, owned):
+            _take(needs, used, 1)
+            chosen.append(fig["fig_id"])
+            dfs(index + 1, profit + worth, count + 1)
+            chosen.pop()
+            _take(needs, used, -1)
+            if nodes["n"] > cap:
+                return
+        dfs(index + 1, profit, count)
+
+    dfs(0, 0, 0)
+    best["capped"] = nodes["n"] > cap
+    return best
+
+
+def _selection_fits(figures: list, owned: dict) -> bool:
+    used: dict = {}
+    for fig in figures:
+        needs = _part_needs(fig)
+        if not _can_take(needs, used, owned):
+            return False
+        _take(needs, used, 1)
+    return True
+
+
+def _usage(figures: list) -> dict:
+    used: dict = {}
+    for fig in figures:
+        for part in fig["parts"]:
+            need = int(part.get("need") or 0)
+            if need <= 0:
+                continue
+            key = owned_key(part["item_no"], part["color_id"])
+            slot = used.setdefault(key, {"qty": 0, "figs": []})
+            slot["qty"] += need
+            slot["figs"].append({"fig_id": fig["fig_id"], "name": fig["name"], "need": need})
+    return used
+
+
+def _conflicts(fig: dict, used: dict, owned: dict) -> list:
+    rows = []
+    for part in fig["parts"]:
+        need = int(part.get("need") or 0)
+        if need <= 0:
+            continue
+        key = owned_key(part["item_no"], part["color_id"])
+        have = int(owned.get(key, 0))
+        slot = used.get(key) or {"qty": 0, "figs": []}
+        taken = int(slot["qty"])
+        if taken + need <= have:
+            continue
+        rows.append(
+            {
+                "item_no": part["item_no"],
+                "item_name": part.get("item_name") or "",
+                "color_name": part.get("color_name") or "",
+                "need": need,
+                "have": have,
+                "taken": taken,
+                "by": list(slot["figs"]),
+            }
+        )
+    return rows
+
+
+def _spot_rows(spots: list) -> list:
+    rows = [
+        {"remark": (spot.get("remark") or "").strip(), "qty": int(spot.get("qty") or 0)}
+        for spot in spots or []
+        if int(spot.get("qty") or 0) > 0
+    ]
+    rows.sort(key=lambda spot: (-spot["qty"], spot["remark"].lower()))
+    return rows
+
+
+def _assign_places(need: int, spots: list, used_remarks: set) -> list:
+    """Put `need` pieces into remarks, staying on a drawer the walk already visits."""
+    available = _spot_rows(spots)
+    covered = [spot for spot in available if spot["qty"] >= need]
+    if covered:
+        home = [spot for spot in covered if spot["remark"] in used_remarks]
+        pool = home or covered
+        pool.sort(key=lambda spot: (-spot["qty"], spot["remark"].lower()))
+        return [{"remark": pool[0]["remark"], "qty": need}]
+    ordered = sorted(
+        available,
+        key=lambda spot: (spot["remark"] not in used_remarks, -spot["qty"], spot["remark"].lower()),
+    )
+    left = need
+    taken = []
+    for spot in ordered:
+        if left <= 0:
+            break
+        qty = min(left, spot["qty"])
+        if qty <= 0:
+            continue
+        taken.append({"remark": spot["remark"], "qty": qty})
+        left -= qty
+    if left > 0:
+        taken.append({"remark": "", "qty": left, "short": True})
+    return taken
+
+
+def pickup_stops(figures: list, places: dict | None) -> list:
+    """Parts for one of each figure, grouped by the inventory remark to pick them from."""
+    wanted: dict = {}
+    for fig in figures:
+        for part in fig["parts"]:
+            need = int(part.get("need") or 0)
+            if need <= 0:
+                continue
+            key = owned_key(part["item_no"], part["color_id"])
+            slot = wanted.setdefault(
+                key,
+                {
+                    "item_no": part["item_no"],
+                    "item_name": part.get("item_name") or "",
+                    "color_id": part.get("color_id") or "",
+                    "color_name": part.get("color_name") or "",
+                    "need": 0,
+                    "figs": [],
+                },
+            )
+            slot["need"] += need
+            slot["figs"].append({"fig_id": fig["fig_id"], "name": fig["name"], "need": need})
+    # Parts that can only come from one remark lock that stop before the others choose.
+    ordered = sorted(
+        wanted.items(),
+        key=lambda item: (len(_spot_rows((places or {}).get(item[0]) or [])), item[1]["item_no"].lower()),
+    )
+    grouped: dict[str, list] = {}
+    used_remarks: set[str] = set()
+    for key, slot in ordered:
+        for stop in _assign_places(slot["need"], (places or {}).get(key) or [], used_remarks):
+            used_remarks.add(stop["remark"])
+            grouped.setdefault(stop["remark"], []).append(
+                {
+                    "qty": stop["qty"],
+                    "item_no": slot["item_no"],
+                    "item_name": slot["item_name"],
+                    "color_name": slot["color_name"],
+                    "image_url": bricklink.image_url("PART", slot["item_no"], slot.get("color_id") or ""),
+                    "figs": slot["figs"],
+                    "short": bool(stop.get("short")),
+                }
+            )
+
+    def remark_key(remark: str) -> tuple:
+        return (remark == "", remark.lower())
+
+    stops = []
+    for remark in sorted(grouped, key=remark_key):
+        parts = sorted(grouped[remark], key=lambda row: (row["item_no"].lower(), row["color_name"].lower()))
+        stops.append(
+            {
+                "remark": remark,
+                "label": remark or "No remark",
+                "pieces": sum(int(part["qty"]) for part in parts),
+                "parts": parts,
+            }
+        )
+    return stops
+
+
+def plan_build(figures: list, owned: dict | None, places: dict | None = None) -> dict:
+    """One of each selected figure, or the buildable set with the best profit.
+
+    Figures that still fit are kept even when their own profit is negative.
+    The ones left out are the ones that need a part the kept set uses up.
+    """
+    stock = {key: int(qty) for key, qty in (owned or {}).items()}
+    fits = _selection_fits(figures, stock)
+    capped = False
+    if fits:
+        kept = list(figures)
+        blocked_figs = []
+    else:
+        non_negative = [fig for fig in figures if _worth(fig) >= 0]
+        negative = [fig for fig in figures if _worth(fig) < 0]
+        core = _search(non_negative, stock, "profit")
+        capped = bool(core["capped"])
+        core_ids = set(core["ids"])
+        residual = dict(stock)
+        for fig in figures:
+            if fig["fig_id"] not in core_ids:
+                continue
+            for key, need in _part_needs(fig):
+                residual[key] = int(residual.get(key, 0)) - need
+        extra = _search(negative, residual, "count")
+        capped = capped or bool(extra["capped"])
+        kept_ids = core_ids | set(extra["ids"])
+        kept = [fig for fig in figures if fig["fig_id"] in kept_ids]
+        blocked_figs = [fig for fig in figures if fig["fig_id"] not in kept_ids]
+    used = _usage(kept)
+    blocked = []
+    for fig in blocked_figs:
+        blocked.append({**fig, "conflicts": _conflicts(fig, used, stock)})
+    kept = sorted(
+        kept,
+        key=lambda fig: (
+            fig["profit_milli"] is None,
+            -(fig["profit_milli"] or 0),
+            fig["name"].lower(),
+            fig["fig_id"],
+        ),
+    )
+    known = [fig["profit_milli"] for fig in kept if fig["profit_milli"] is not None]
+    stops = pickup_stops(kept, places) if fits else []
+    return {
+        "fits": fits,
+        "capped": capped,
+        "kept": kept,
+        "blocked": blocked,
+        "profit_milli": sum(known) if known else None,
+        "profit_known": len(known) == len(kept) and bool(kept),
+        "priced_count": len(known),
+        "stops": stops,
+        "pieces": sum(int(stop["pieces"]) for stop in stops),
+        "stop_count": len(stops),
     }

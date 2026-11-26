@@ -35,10 +35,10 @@
   </div>
 
   <div class="hero-actions sync-actions">
-    <form class="sync-form" method="post" action="{{ url_for('inventory_sync_apply') }}" data-confirm="Apply this sync? {{ report.added|length }} added, {{ report.updated|length }} updated, {{ report.removed|length }} removed.">
+    <form class="sync-form" method="post" action="{{ url_for('inventory_sync_apply') }}" data-page-busy="1" data-confirm="Apply this sync? {{ report.added|length }} added, {{ report.updated|length }} updated, {{ report.removed|length }} removed.">
       <button type="submit">Approve</button>
     </form>
-    <form class="sync-form" method="post" action="{{ url_for('inventory_sync_reject') }}" data-confirm="Reject this sync? The local inventory stays as it is.">
+    <form class="sync-form" method="post" action="{{ url_for('inventory_sync_reject') }}" data-page-busy="1" data-confirm="Reject this sync? The local inventory stays as it is.">
       <button class="btn ghost" type="submit">Reject</button>
     </form>
   </div>
@@ -170,18 +170,4 @@
   <p class="empty">BrickLink matches the local inventory. Approve records the sync, or reject to drop this fetch.</p>
   {% endif %}
 </section>
-<script>
-  document.querySelectorAll("form.sync-form").forEach((form) => {
-    form.addEventListener("submit", (event) => {
-      const message = form.dataset.confirm;
-      if (message && !window.confirm(message)) {
-        event.preventDefault();
-        return;
-      }
-      const button = form.querySelector("button");
-      if (button) button.disabled = true;
-      document.body.classList.add("is-busy");
-    });
-  });
-</script>
 {% endblock %}

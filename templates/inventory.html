@@ -10,7 +10,7 @@
     </div>
     <div class="hero-actions">
       {% if has_bricklink_creds %}
-      <form class="sync-form" method="post" action="{{ url_for('inventory_sync') }}"{% if pending_sync %} data-confirm="A sync is already waiting for review. Fetch again and replace that report?"{% endif %}>
+      <form class="sync-form" method="post" action="{{ url_for('inventory_sync') }}" data-busy="Fetching…" data-page-busy="1"{% if pending_sync %} data-confirm="A sync is already waiting for review. Fetch again and replace that report?"{% endif %}>
         <button type="submit">Sync from BrickLink</button>
         <p class="import-status" hidden>Fetching BrickLink inventory… this can take a minute.</p>
       </form>
@@ -140,23 +140,4 @@
   <p class="empty">No listings match those filters.</p>
   {% endif %}
 </section>
-<script>
-  document.querySelectorAll("form.sync-form").forEach((form) => {
-    form.addEventListener("submit", (event) => {
-      const message = form.dataset.confirm;
-      if (message && !window.confirm(message)) {
-        event.preventDefault();
-        return;
-      }
-      const button = form.querySelector("button");
-      if (button) {
-        button.disabled = true;
-        button.textContent = "Fetching…";
-      }
-      const status = form.querySelector(".import-status");
-      if (status) status.hidden = false;
-      document.body.classList.add("is-busy");
-    });
-  });
-</script>
 {% endblock %}

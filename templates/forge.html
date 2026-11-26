@@ -6,7 +6,7 @@
     <div>
       <p class="eyebrow">Minifig Forge</p>
       <h1>Buildable minifigures</h1>
-      <p class="lede">Each figure is checked on its own against the parts in Inventory. The number you can build is set by the scarcest part. One loose part can qualify more than one figure. New and used quantities are added together. The list runs from the highest BrickLink price: the average paid for a used figure over the last 6 months. Parts listed is your price for one figure, after any sale, using the lowest price when a part is listed more than once. That total against the figure price is the profit or loss of building it.</p>
+      <p class="lede">Each figure is checked on its own against the parts in Inventory. The number you can build is set by the scarcest part. One loose part can qualify more than one figure. New and used quantities are added together. The list runs from the highest profit. BrickLink price is the average paid for a used figure over the last 6 months. Parts listed is your price for one figure, after any sale, using the lowest price when a part is listed more than once. Profit is that figure price minus the parts. Check the figures you want to build. Review build keeps the set that fits in the parts you have and pays the most, then lists the drawers to pick from.</p>
     </div>
   </div>
 
@@ -36,7 +36,8 @@
     </article>
   </div>
 
-  <form class="filters" method="get">
+  <div class="filters">
+  <form method="get">
     <label>Figure
       <input name="q" value="{{ filters.q }}" placeholder="Name or BrickLink id">
     </label>
@@ -45,9 +46,26 @@
     <a class="btn ghost" href="{{ url_for('forge') }}">Clear</a>
     {% endif %}
   </form>
+  <form method="post" action="{{ url_for('forge_refresh_prices') }}">
+    <input type="hidden" name="q" value="{{ filters.q }}">
+    <input type="hidden" name="page" value="{{ filters.page }}">
+    <button class="btn ghost" type="submit" {% if price_refresh_running %}disabled{% endif %}>Refresh prices</button>
+  </form>
+  </div>
 
-  {% if result.price_pending %}
+  <p class="lede pager-note" id="forge-build-bar">
+    Check a figure to add it to the build.
+    <a id="forge-build-review" href="{{ url_for('forge_build') }}" {% if not build_ids %}hidden{% endif %}><span id="forge-build-count">{{ build_ids|length }}</span> selected · review</a>
+  </p>
+
+  {% if price_refresh_running %}
+  <p class="lede pager-note" id="forge-price-status">Refreshing BrickLink prices. This usually takes a few seconds. The page reloads when it finishes.</p>
+  {% elif result.price_pending %}
+    {% if has_affiliate_key %}
   <p class="lede pager-note">BrickLink prices are still loading for {{ '{:,}'.format(result.price_pending) }} figure{{ 's' if result.price_pending != 1 else '' }}. Reload to see them in order.</p>
+    {% else %}
+  <p class="lede pager-note">{{ '{:,}'.format(result.price_pending) }} figure{{ 's' if result.price_pending != 1 else '' }} still need a sold price. Add a BrickLink price-guide key in <a href="{{ url_for('settings') }}">Settings</a>.</p>
+    {% endif %}
   {% endif %}
   {% if rows %}
   <p class="lede pager-note">{{ '{:,}'.format(result.total) }} figure{{ 's' if result.total != 1 else '' }}{% if result.pages > 1 %} · page {{ result.page }} of {{ result.pages }}{% endif %}</p>
@@ -56,6 +74,7 @@
       <table>
         <thead>
           <tr>
+            <th class="forge-pick">Build</th>
             <th></th>
             <th>Figure</th>
             <th class="num forge-price">Avg sold</th>
@@ -66,6 +85,7 @@
         <tbody>
           {% for fig in rows %}
           <tr>
+            <td class="forge-pick"><input class="forge-pick-box" type="checkbox" value="{{ fig.fig_id }}" aria-label="Build {{ fig.fig_id }}" {% if fig.fig_id in build_ids %}checked{% endif %}></td>
             <td><img class="thumb" src="{{ fig.image_url }}" alt="" referrerpolicy="no-referrer" loading="lazy"></td>
             <td class="item">
               <a href="{{ fig.catalog_url }}" target="_blank" rel="noreferrer">{{ fig.fig_id }}</a>
@@ -137,6 +157,42 @@
   <p class="empty">No minifigure in the catalog matches “{{ filters.q }}”.</p>
   {% else %}
   <p class="empty">No complete minifigure matches the parts on hand.</p>
+  {% endif %}
+  <script>
+    const countEl = document.getElementById("forge-build-count");
+    const reviewEl = document.getElementById("forge-build-review");
+    document.querySelectorAll(".forge-pick-box").forEach((box) => {
+      box.addEventListener("change", async () => {
+        const body = new FormData();
+        body.set("fig_id", box.value);
+        body.set("on", box.checked ? "1" : "0");
+        try {
+          const res = await fetch({{ url_for('forge_build_toggle')|tojson }}, { method: "POST", body });
+          const data = await res.json();
+          if (data.full) box.checked = false;
+          if (countEl) countEl.textContent = data.count;
+          if (reviewEl) reviewEl.hidden = !data.count;
+        } catch (err) {
+          box.checked = !box.checked;
+        }
+      });
+    });
+  </script>
+  {% if price_refresh_running %}
+  <script>
+    const watchPrices = async () => {
+      try {
+        const res = await fetch({{ url_for('forge_price_status')|tojson }});
+        const data = await res.json();
+        if (!data.running) {
+          location.reload();
+          return;
+        }
+      } catch (err) {}
+      setTimeout(watchPrices, 2000);
+    };
+    setTimeout(watchPrices, 2000);
+  </script>
   {% endif %}
   {% endif %}
 </section>

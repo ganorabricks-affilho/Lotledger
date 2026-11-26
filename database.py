@@ -3,10 +3,20 @@ import json
 import re
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path(__file__).resolve().parent / "data" / "lotledger.db"
+from drawer_layout import MINIFIG_CODES as _MINIFIG_CODES
+from drawer_layout import SEED_CABINETS
+from money import cents_from_form as parse_money
+from paths import database_path
+from money import format_cents as money
+from money import milli_from_form as parse_price
+from money import format_cents_input as money_input
+from money import format_milli as money3
+from money import format_milli_plain as _price_text
+from money import line_price_scale_needs_migration, milli_to_cents
+
+DB_PATH = database_path()
 PRICE_SYNC_PREVIEW_PATH = DB_PATH.parent / "price_sync_preview.json"
 
 SCHEMA = """
@@ -48,21 +58,6 @@ CREATE TABLE IF NOT EXISTS listing_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_listing_items_lot_id ON listing_items(lot_id);
-
-CREATE TABLE IF NOT EXISTS sales (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sold_on TEXT NOT NULL,
-    platform TEXT NOT NULL,
-    order_ref TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    gross_cents INTEGER NOT NULL,
-    fees_cents INTEGER NOT NULL DEFAULT 0,
-    lot_id INTEGER,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (lot_id) REFERENCES lots(id) ON DELETE SET NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_sales_lot_id ON sales(lot_id);
 
 CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -268,6 +263,7 @@ def init_db() -> None:
     added_packing = False
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        conn.execute("DROP TABLE IF EXISTS sales")
         _seed_drawer_categories(conn)
         category_cols = {row[1] for row in conn.execute("PRAGMA table_info(drawer_categories)")}
         if "keywords" not in category_cols:
@@ -328,37 +324,78 @@ def init_db() -> None:
         scale = conn.execute(
             "SELECT value FROM settings WHERE key = ?", ("order_line_price_scale",)
         ).fetchone()
-        if not scale or scale["value"] != "milli":
-            conn.execute("UPDATE order_lines SET price_cents = price_cents * 10")
+        stored_scale = scale["value"] if scale else None
+        if stored_scale is None:
             conn.execute(
-                "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                "INSERT INTO settings(key, value) VALUES (?, ?)",
                 ("order_line_price_scale", "milli"),
             )
+        elif line_price_scale_needs_migration(stored_scale):
+            conn.execute("UPDATE order_lines SET price_cents = price_cents * 10")
+            conn.execute(
+                "UPDATE settings SET value = ? WHERE key = ?",
+                ("milli", "order_line_price_scale"),
+            )
+        listing_scale = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", ("listing_price_scale",)
+        ).fetchone()
+        listing_stored = listing_scale["value"] if listing_scale else None
+        if listing_stored != "milli":
+            # Existing lot rows were whole cents. Thousandths keep the same
+            # dollar amount (15 cents becomes 150 milli) and the same cost split.
+            conn.execute("UPDATE listing_items SET price_cents = price_cents * 10")
+            conn.execute(
+                """
+                INSERT INTO settings(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                ("listing_price_scale", "milli"),
+            )
+            clear_preview = True
+        else:
+            clear_preview = False
+        type_map = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", ("listing_type_words",)
+        ).fetchone()
+        if type_map is None:
+            conn.execute(
+                """
+                UPDATE listing_items
+                SET condition = 'Used'
+                WHERE condition = 'Used (Good)' AND item_type != 'Minibuild'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE listing_items
+                SET condition = 'New'
+                WHERE condition = 'New (Complete)' AND item_type != 'Minibuild'
+                """
+            )
+            conn.execute(
+                """
+                UPDATE listing_items
+                SET item_type = CASE item_type
+                    WHEN 'Part' THEN 'PART'
+                    WHEN 'Minifigure' THEN 'MINIFIG'
+                    WHEN 'Set' THEN 'SET'
+                    ELSE item_type
+                END
+                WHERE item_type IN ('Part', 'Minifigure', 'Set')
+                """
+            )
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES (?, ?)",
+                ("listing_type_words", "v1"),
+            )
         conn.execute("DELETE FROM store_inventory WHERE is_stock_room = 1")
+    if clear_preview:
+        clear_price_sync_preview()
     if added_packing:
         with get_conn() as conn:
             order_ids = [row["id"] for row in conn.execute("SELECT id FROM orders")]
         for order_id in order_ids:
             persist_line_net_gains(order_id)
-
-
-def parse_money(value: str) -> int:
-    raw = (value or "").strip().replace("$", "").replace(",", "")
-    if raw == "":
-        return 0
-    return int(round(float(raw) * 100))
-
-
-def money(cents: int) -> str:
-    sign = "-" if cents < 0 else ""
-    cents = abs(cents)
-    return f"{sign}${cents // 100:,}.{cents % 100:02d}"
-
-
-def money3(millis: int) -> str:
-    sign = "-" if millis < 0 else ""
-    millis = abs(millis or 0)
-    return f"{sign}${millis // 1000:,}.{millis % 1000:03d}"
 
 
 def inventory_age(date_created: str, today=None) -> dict:
@@ -389,13 +426,6 @@ def inventory_age(date_created: str, today=None) -> dict:
         span = (today - added).days
         label = "today" if span == 0 else f"{span}d"
     return {"age_label": label, "added_on": added.isoformat()}
-
-
-def money_input(cents: int) -> str:
-    cents = cents or 0
-    sign = "-" if cents < 0 else ""
-    cents = abs(cents)
-    return f"{sign}{cents // 100}.{cents % 100:02d}"
 
 
 PACKING_LABOR_CENTS_PER_HOUR = 1200  # $12/hour
@@ -471,11 +501,10 @@ def list_lots():
         SELECT
             lots.*,
             COALESCE((SELECT SUM(net_gain_cents) FROM order_lines WHERE order_lines.lot_id = lots.id), 0) AS revenue_cents,
-            0 AS fees_cents,
             COALESCE((SELECT COUNT(*) FROM order_lines WHERE order_lines.lot_id = lots.id), 0) AS sale_count,
             COALESCE((SELECT COUNT(*) FROM listing_items WHERE listing_items.lot_id = lots.id), 0) AS detail_count,
             COALESCE((SELECT SUM(qty) FROM listing_items WHERE listing_items.lot_id = lots.id), 0) AS listed_qty,
-            COALESCE((SELECT SUM(qty * price_cents) FROM listing_items WHERE listing_items.lot_id = lots.id), 0) AS listed_value_cents
+            COALESCE((SELECT SUM(qty * price_cents) FROM listing_items WHERE listing_items.lot_id = lots.id), 0) AS listed_value_milli
         FROM lots
         GROUP BY lots.id
         ORDER BY lots.purchased_on DESC, lots.id DESC
@@ -503,6 +532,170 @@ def list_lots():
             data["revenue_cents"] = revenue_by_lot[data["id"]]
         lots.append(_enrich_lot(data))
     return lots
+
+
+def _allocate_cents(total: int, weights: list) -> list:
+    """Split integer cents by weight so the shares add up to total."""
+    count = len(weights)
+    if count == 0:
+        return []
+    total = int(total or 0)
+    if total == 0:
+        return [0] * count
+    sign = -1 if total < 0 else 1
+    total = abs(total)
+    safe = [max(0, int(weight or 0)) for weight in weights]
+    weight_sum = sum(safe)
+    if weight_sum <= 0:
+        shares = [0] * count
+        shares[0] = total
+        return [sign * share for share in shares]
+    raw = [total * weight for weight in safe]
+    shares = [value // weight_sum for value in raw]
+    leftover = total - sum(shares)
+    order = sorted(
+        range(count),
+        key=lambda index: (raw[index] % weight_sum, safe[index], -index),
+        reverse=True,
+    )
+    for index in order:
+        if leftover <= 0:
+            break
+        shares[index] += 1
+        leftover -= 1
+    return [sign * share for share in shares]
+
+
+def _allocate_part_costs(invested_cents: int, items: list, matched_lines: list) -> dict:
+    """Give each listing row a share of the lot total, weighted by listing price.
+
+    A row's weight is quantity × unit price in thousandths of a dollar. The
+    share itself stays in cents. When pieces sell, that row's cost is split
+    the same way across the sold quantity.
+    """
+    for line in matched_lines:
+        line["part_cost_cents"] = None
+        line["part_profit_cents"] = None
+    weights = [
+        max(0, int(item.get("qty") or 0) * int(item.get("price_cents") or 0))
+        for item in items
+    ]
+    # No listing prices means there is nothing to weight the lot total against.
+    if sum(weights) <= 0:
+        shares = [0] * len(items)
+    else:
+        shares = _allocate_cents(invested_cents, weights)
+    lines_by_bl = {}
+    for line in matched_lines:
+        bl_lot_id = str(line.get("bl_lot_id") or "")
+        if bl_lot_id:
+            lines_by_bl.setdefault(bl_lot_id, []).append(line)
+
+    sold_cost_total = 0
+    profit_total = 0
+    for item, line_cost in zip(items, shares):
+        qty = int(item.get("qty") or 0)
+        item["part_cost_cents"] = line_cost
+        # The cost share is cents. Show a per-piece cost in thousandths.
+        item["unit_cost_milli"] = int(round(line_cost * 10 / qty)) if qty else 0
+        bl_lot_id = str(item.get("bl_lot_id") or "")
+        sold_lines = lines_by_bl.get(bl_lot_id, []) if bl_lot_id else []
+        sold_qty = sum(int(line.get("qty") or 0) for line in sold_lines)
+        if sold_lines and sold_qty > 0:
+            sold_weights = [int(line.get("qty") or 0) for line in sold_lines]
+            if qty > sold_qty:
+                piece_shares = _allocate_cents(line_cost, sold_weights + [qty - sold_qty])
+                piece_shares = piece_shares[:-1]
+            else:
+                piece_shares = _allocate_cents(line_cost, sold_weights)
+            sold_cost = sum(piece_shares)
+            for line, share in zip(sold_lines, piece_shares):
+                current = line.get("part_cost_cents")
+                line["part_cost_cents"] = share if current is None else current + share
+        else:
+            sold_cost = 0
+        item["sold_cost_cents"] = sold_cost
+        if sold_qty > 0 or int(item.get("sale_net_gain_cents") or 0):
+            item["part_profit_cents"] = int(item.get("sale_net_gain_cents") or 0) - sold_cost
+            profit_total += item["part_profit_cents"]
+        else:
+            item["part_profit_cents"] = None
+        sold_cost_total += sold_cost
+
+    for line in matched_lines:
+        if line.get("part_cost_cents") is None:
+            continue
+        line["part_profit_cents"] = int(line.get("net_gain_cents") or 0) - int(line["part_cost_cents"])
+    return {
+        "sold_cost_cents": sold_cost_total,
+        "parts_profit_cents": profit_total,
+        "part_cost_cents": sum(int(item.get("part_cost_cents") or 0) for item in items),
+    }
+
+
+def part_costs_for_order_lines(lot_id: int) -> dict:
+    """Map order_line id -> lot cost allocated to that sold line."""
+    with get_conn() as conn:
+        lot = conn.execute(
+            """
+            SELECT cost_cents, shipping_cents, tax_cents, handling_cents
+            FROM lots WHERE id = ?
+            """,
+            (lot_id,),
+        ).fetchone()
+        if lot is None:
+            return {}
+        items = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT qty, price_cents, bl_lot_id FROM listing_items WHERE lot_id = ?",
+                (lot_id,),
+            )
+        ]
+        lines = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT order_lines.id, order_lines.bl_lot_id, order_lines.qty, order_lines.net_gain_cents
+                FROM order_lines
+                JOIN orders ON orders.id = order_lines.order_id
+                WHERE order_lines.lot_id = ?
+                  AND instr(lower(coalesce(orders.status, '')), 'cancel') = 0
+                """,
+                (lot_id,),
+            )
+        ]
+    invested = (
+        int(lot["cost_cents"] or 0)
+        + int(lot["shipping_cents"] or 0)
+        + int(lot["tax_cents"] or 0)
+        + int(lot["handling_cents"] or 0)
+    )
+    _allocate_part_costs(invested, items, lines)
+    return {
+        int(line["id"]): line.get("part_cost_cents")
+        for line in lines
+        if line.get("part_cost_cents") is not None
+    }
+
+
+def attach_part_costs(lines: list) -> None:
+    """Add lot cost and profit to order lines that are matched to a lot."""
+    by_lot = {}
+    for line in lines:
+        if line.get("lot_id"):
+            by_lot.setdefault(int(line["lot_id"]), []).append(line)
+    for line in lines:
+        line.setdefault("part_cost_cents", None)
+        line.setdefault("part_profit_cents", None)
+    for lot_id, lot_lines in by_lot.items():
+        costs = part_costs_for_order_lines(lot_id)
+        for line in lot_lines:
+            cost = costs.get(int(line["id"]))
+            if cost is None:
+                continue
+            line["part_cost_cents"] = cost
+            line["part_profit_cents"] = int(line.get("net_gain_cents") or 0) - cost
 
 
 def get_lot(lot_id: int):
@@ -581,17 +774,28 @@ def get_lot(lot_id: int):
         {
             **dict(row),
             "revenue_cents": revenue,
-            "fees_cents": 0,
             "sale_count": len(matched),
             "detail_count": len(items),
             "listed_qty": sum(item["qty"] for item in items),
-            "listed_value_cents": sum(item["qty"] * item["price_cents"] for item in items),
+            "listed_value_milli": sum(item["qty"] * item["price_cents"] for item in items),
         }
     )
+    totals = _allocate_part_costs(lot["invested_cents"], items, matched)
+    for group in matched_groups:
+        costs = [line.get("part_cost_cents") for line in group["lines"]]
+        if costs and all(cost is not None for cost in costs):
+            group["part_cost_cents"] = sum(costs)
+            group["part_profit_cents"] = int(group["net_cents"]) - group["part_cost_cents"]
+        else:
+            group["part_cost_cents"] = None
+            group["part_profit_cents"] = None
     lot["matched_lines"] = matched
     lot["matched_groups"] = matched_groups
     lot["listed_items"] = items
     lot["details_locked"] = bool(lot.get("details_locked"))
+    lot["sold_cost_cents"] = totals["sold_cost_cents"]
+    lot["parts_profit_cents"] = totals["parts_profit_cents"]
+    lot["part_cost_cents"] = totals["part_cost_cents"]
     return lot
 
 
@@ -639,12 +843,6 @@ def update_lot(lot_id: int, data: dict) -> None:
                 lot_id,
             ),
         )
-
-
-def replace_listing(lot_id: int, filename: str, items: list) -> None:
-    with get_conn() as conn:
-        conn.execute("DELETE FROM listing_items WHERE lot_id = ?", (lot_id,))
-    append_listing(lot_id, filename, items)
 
 
 def set_lot_details_locked(lot_id: int, locked: bool) -> None:
@@ -754,12 +952,7 @@ def load_price_sync_preview() -> Optional[dict]:
 
 
 def clear_price_sync_preview() -> None:
-    try:
-        PRICE_SYNC_PREVIEW_PATH.unlink(missing_ok=True)
-    except TypeError:
-        # Python < 3.8
-        if PRICE_SYNC_PREVIEW_PATH.exists():
-            PRICE_SYNC_PREVIEW_PATH.unlink()
+    PRICE_SYNC_PREVIEW_PATH.unlink(missing_ok=True)
 
 
 def preview_listing_price_updates(bl_prices: dict) -> dict:
@@ -922,7 +1115,6 @@ def delete_lot(lot_id: int) -> None:
             "UPDATE order_lines SET lot_id = NULL, matched_at = NULL WHERE lot_id = ?",
             (lot_id,),
         )
-        conn.execute("UPDATE sales SET lot_id = NULL WHERE lot_id = ?", (lot_id,))
         conn.execute("DELETE FROM lots WHERE id = ?", (lot_id,))
 
 
@@ -1285,35 +1477,6 @@ def refresh_all_line_net_gains() -> int:
     return len(order_ids)
 
 
-def _match_line_api_payloads(existing_lines: list, api_lines: list) -> list:
-    """Pair DB lines to normalized API lines without inventing new rows."""
-    remaining = list(api_lines)
-    matched = []
-    for row in existing_lines:
-        pick = None
-        for idx, api_line in enumerate(remaining):
-            bl = (row.get("bl_lot_id") or "").strip()
-            owl = (row.get("owl_lot_id") or "").strip()
-            if bl and bl == (api_line.get("bl_lot_id") or "").strip():
-                pick = idx
-                break
-            if owl and owl == (api_line.get("owl_lot_id") or "").strip():
-                pick = idx
-                break
-        if pick is None:
-            for idx, api_line in enumerate(remaining):
-                if (row.get("item_id") or "") == (api_line.get("item_id") or "") and int(
-                    row.get("qty") or 0
-                ) == int(api_line.get("qty") or 0):
-                    pick = idx
-                    break
-        if pick is None:
-            matched.append((row, None))
-            continue
-        matched.append((row, remaining.pop(pick)))
-    return matched
-
-
 def _status_refresh_done(platform_key: str, status: str) -> bool:
     """Terminal statuses we do not re-check on refresh."""
     platform = (platform_key or "").strip().lower()
@@ -1487,143 +1650,40 @@ def refresh_order_statuses(year: Optional[int] = None, month: Optional[int] = No
     }
 
 
-def backfill_order_api_json() -> dict:
-    """Fetch live API payloads for existing orders and store them in api_json only.
-
-    Does not change mapped order/line fields, shipping/packing, matches, or net gains.
-    Skips orders that already have api_json.
-    """
-    import bricklink
-    import brickowl
-
-    with get_conn() as conn:
-        orders = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT id, platform_key, order_number, api_json
-                FROM orders
-                ORDER BY id
-                """
-            )
-        ]
-        lines_by_order = {}
-        for row in conn.execute(
-            """
-            SELECT id, order_id, item_id, qty, bl_lot_id, owl_lot_id, api_json
-            FROM order_lines
-            ORDER BY id
-            """
-        ):
-            lines_by_order.setdefault(row["order_id"], []).append(dict(row))
-
-    bl_creds = None
-    owl_key = None
-    updated_orders = 0
-    updated_lines = 0
-    skipped = 0
-    errors = []
-
-    for order in orders:
-        if (order.get("api_json") or "").strip():
-            # Still fill any empty line payloads from stored order items if present.
-            skipped += 1
-            continue
-        platform = (order.get("platform_key") or "").strip().lower()
-        number = str(order.get("order_number") or "")
-        try:
-            if platform == "bricklink":
-                if bl_creds is None:
-                    bl_creds = bricklink.creds_from_settings(get_setting)
-                parsed = bricklink.fetch_order_bundle(bl_creds, number)
-            elif platform == "brickowl":
-                if owl_key is None:
-                    owl_key = get_setting("brickowl_api_key")
-                    if not owl_key:
-                        raise ValueError("Add your BrickOwl API key in Settings first.")
-                parsed = brickowl.fetch_order_bundle(owl_key, number)
-            else:
-                skipped += 1
-                continue
-        except Exception as exc:  # noqa: BLE001 - continue backfill for other orders
-            errors.append(f"{platform} #{number}: {exc}")
-            continue
-
-        order_api = parsed.get("api_json") or ""
-        pairs = _match_line_api_payloads(lines_by_order.get(order["id"], []), parsed.get("lines") or [])
-        with get_conn() as conn:
-            if order_api:
-                conn.execute(
-                    "UPDATE orders SET api_json = ? WHERE id = ? AND (api_json IS NULL OR api_json = '')",
-                    (order_api, order["id"]),
-                )
-                if conn.execute("SELECT changes()").fetchone()[0]:
-                    updated_orders += 1
-            for row, api_line in pairs:
-                if not api_line:
-                    continue
-                if (row.get("api_json") or "").strip():
-                    continue
-                line_api = api_line.get("api_json") or ""
-                if not line_api:
-                    continue
-                conn.execute(
-                    "UPDATE order_lines SET api_json = ? WHERE id = ? AND (api_json IS NULL OR api_json = '')",
-                    (line_api, row["id"]),
-                )
-                if conn.execute("SELECT changes()").fetchone()[0]:
-                    updated_lines += 1
-
-    return {
-        "updated_orders": updated_orders,
-        "updated_lines": updated_lines,
-        "skipped": skipped,
-        "errors": errors,
-    }
-
-
 def delete_order(order_id: int) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM order_lines WHERE order_id = ?", (order_id,))
         conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
 
 
-def unmatched_lines():
-    sql = """
-        SELECT order_lines.*, orders.sold_on, orders.platform, orders.order_number
-        FROM order_lines
-        JOIN orders ON orders.id = order_lines.order_id
-        WHERE order_lines.lot_id IS NULL
-          AND instr(lower(coalesce(orders.status, '')), 'cancel') = 0
-        ORDER BY orders.sold_on DESC, order_lines.id DESC
-    """
-    with get_conn() as conn:
-        return [dict(row) for row in conn.execute(sql).fetchall()]
-
-
 def summary():
     lots = list_lots()
     orders = [order for order in list_orders() if not order.get("is_cancelled")]
-    unmatched = unmatched_lines()
+    with get_conn() as conn:
+        unmatched = conn.execute(
+            """
+            SELECT COUNT(*) AS n, COALESCE(SUM(order_lines.net_gain_cents), 0) AS net
+            FROM order_lines
+            JOIN orders ON orders.id = order_lines.order_id
+            WHERE order_lines.lot_id IS NULL
+              AND instr(lower(coalesce(orders.status, '')), 'cancel') = 0
+            """
+        ).fetchone()
     invested = sum(lot["invested_cents"] for lot in lots)
     revenue = sum(lot["revenue_cents"] for lot in lots)
-    unmatched_net = sum(int(line.get("net_gain_cents") or 0) for line in unmatched)
     order_net = sum(order["net_cents"] for order in orders)
     profit = revenue - invested
     return {
         "lot_count": len(lots),
         "invested_cents": invested,
         "revenue_cents": revenue,
-        "fees_cents": 0,
         "profit_cents": profit,
-        "unmatched_count": len(unmatched),
-        "unmatched_net_cents": unmatched_net,
+        "unmatched_count": int(unmatched["n"]),
+        "unmatched_net_cents": int(unmatched["net"]),
         "order_count": len(orders),
         "order_net_cents": order_net,
         "lots": lots,
-        "unmatched": unmatched,
         "pending_count": sum(1 for lot in lots if not lot["has_details"]),
-        "ready_lots": [lot for lot in lots if lot["has_details"]],
     }
 
 
@@ -2206,11 +2266,88 @@ def sales_profit_report(year: Optional[int] = None, month: Optional[int] = None,
     return report
 
 
+def _plain(value) -> str:
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    return " ".join(str(value).split())
+
+
+def customer_from_api(order: dict) -> dict:
+    """Shipping name and address stored on the order payload, when the store sent them."""
+    platform = (order.get("platform_key") or "").strip().lower()
+    raw = order.get("api_json") or ""
+    try:
+        payload = json.loads(raw) if str(raw).strip() else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    name = ""
+    address = ""
+    if platform == "bricklink":
+        detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+        listing = payload.get("list") if isinstance(payload.get("list"), dict) else {}
+        shipping = detail.get("shipping") if isinstance(detail.get("shipping"), dict) else {}
+        addr = shipping.get("address") if isinstance(shipping.get("address"), dict) else {}
+        person = addr.get("name") if isinstance(addr.get("name"), dict) else {}
+        name = _plain(person.get("full")) or " ".join(
+            part for part in (_plain(person.get("first")), _plain(person.get("last"))) if part
+        )
+        if not name:
+            name = _plain(detail.get("buyer_name")) or _plain(listing.get("buyer_name"))
+        locality = " ".join(
+            part for part in (_plain(addr.get("state")), _plain(addr.get("postal_code"))) if part
+        )
+        city_line = ", ".join(part for part in (_plain(addr.get("city")), locality) if part)
+        country = _plain(addr.get("country_code"))
+        if country in ("US", "USA"):
+            country = ""
+        address = ", ".join(
+            part
+            for part in (
+                _plain(addr.get("address1")),
+                _plain(addr.get("address2")),
+                city_line,
+                country,
+            )
+            if part
+        )
+    else:
+        view = payload.get("view") if isinstance(payload.get("view"), dict) else {}
+        name = " ".join(
+            part
+            for part in (_plain(view.get("ship_first_name")), _plain(view.get("ship_last_name")))
+            if part
+        ) or _plain(view.get("buyer_name"))
+        locality = " ".join(
+            part
+            for part in (_plain(view.get("ship_region")), _plain(view.get("ship_post_code")))
+            if part
+        )
+        city_line = ", ".join(part for part in (_plain(view.get("ship_city")), locality) if part)
+        country = _plain(view.get("ship_country_code")) or _plain(view.get("ship_country"))
+        if country in ("US", "USA", "United States"):
+            country = ""
+        address = ", ".join(
+            part
+            for part in (
+                _plain(view.get("ship_street_1")),
+                _plain(view.get("ship_street_2")),
+                city_line,
+                country,
+            )
+            if part
+        )
+    return {"customer_name": name, "customer_address": address}
+
+
 def _enrich_order(row) -> dict:
     order = dict(row)
     header_total = order.get("header_total_cents") or 0
     lines_cents = order.get("lines_cents") or 0
-    items = header_total or lines_cents
+    # Line prices are thousandths of a dollar. A header total is cents.
+    # When the header is missing, convert instead of treating $0.169 as $1.69.
+    items = header_total or milli_to_cents(lines_cents)
     shipping = order.get("shipping_cents") or 0
     packing = order.get("packing_cents")
     packing = 50 if packing is None else int(packing)
@@ -2239,7 +2376,7 @@ def _enrich_order(row) -> dict:
         item_cost_base = max(0, items - tax - buyer_shipping)
         bricklink_fee_cents = int(round(item_cost_base * 0.03))
     else:
-        item_costs_cents = int(round((lines_cents or 0) / 10))
+        item_costs_cents = milli_to_cents(lines_cents)
         brickowl_fee_cents = int(round(item_costs_cents * 0.0265))
     order["items_cents"] = items
     order["display_lots"] = order.get("header_lots") or order.get("line_count") or 0
@@ -2287,6 +2424,7 @@ def _enrich_order(row) -> dict:
             - brickowl_fee_cents
             - bricklink_fee_cents
         )
+    order.update(customer_from_api(order))
     return order
 
 
@@ -2298,7 +2436,7 @@ def _enrich_lot(row) -> dict:
         + lot.get("tax_cents", 0)
         + lot.get("handling_cents", 0)
     )
-    net = lot["revenue_cents"] - lot["fees_cents"]
+    net = lot["revenue_cents"]
     profit = net - invested
     recovered = 0 if invested == 0 else min(100, int(round((net / invested) * 100)))
     has_details = int(lot.get("detail_count") or 0) > 0
@@ -2801,9 +2939,6 @@ _PLACE_TYPE = {
 }
 
 
-_MINIFIG_CODES = tuple(f"D17-{row:02d}" for row in range(1, 25))
-
-
 def drawer_code(remarks: str) -> str:
     """Column/row at the start of a remark. AJ-09-01 and D17-01-02 roll up."""
     text = (remarks or "").strip().upper()
@@ -2852,10 +2987,6 @@ def _condition_rule(name: str) -> str:
     if has_used and not has_new:
         return "U"
     return ""
-
-
-def _price_text(millis: int) -> str:
-    return f"{(millis or 0) / 1000:.3f}"
 
 
 def suggest_place_rows(items: list) -> list:
@@ -3255,7 +3386,7 @@ def _seed_drawer_categories(conn: sqlite3.Connection) -> None:
             (name, color, max_items, order),
         )
         ids.append(cursor.lastrowid)
-    for letters, rows in (("ABCDEFGH", range(1, 15)), ("IJKLMNOP", range(1, 17))):
+    for letters, rows in SEED_CABINETS:
         for letter in letters:
             column = f"A{letter}"
             for row in rows:

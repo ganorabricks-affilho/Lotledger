@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Ganorabricks{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='forms.js') }}"></script>
 </head>
 <body>
   <header class="top">
@@ -40,6 +41,7 @@
     {% elif nav_section == 'forge' %}
     <nav class="subnav" aria-label="Minifig Forge">
       <a class="{{ 'is-here' if request.endpoint == 'forge' else '' }}" href="{{ url_for('forge') }}">Buildable</a>
+      <a class="{{ 'is-here' if request.endpoint == 'forge_build' else '' }}" href="{{ url_for('forge_build') }}">Build{% if forge_build_count %} · {{ forge_build_count }}{% endif %}</a>
       <a class="{{ 'is-here' if request.endpoint == 'forge_parts' else '' }}" href="{{ url_for('forge_parts') }}">Parts</a>
     </nav>
     {% elif nav_section == 'setup' %}

@@ -137,22 +137,4 @@
   <p class="empty">No duplicate groups match.</p>
   {% endif %}
 </section>
-<script>
-  document.querySelectorAll("form.sync-form").forEach((form) => {
-    form.addEventListener("submit", (event) => {
-      const message = form.dataset.confirm;
-      if (message && !window.confirm(message)) {
-        event.preventDefault();
-        return;
-      }
-      const button = form.querySelector("button");
-      if (button) {
-        button.disabled = true;
-        button.textContent = form.dataset.busy || "Updating…";
-      }
-      const status = form.querySelector(".import-status");
-      if (status) status.hidden = false;
-    });
-  });
-</script>
 {% endblock %}
